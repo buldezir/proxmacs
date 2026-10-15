@@ -22,18 +22,21 @@ final class PBSH2Session: @unchecked Sendable {
     static let readerProtocol = "proxmox-backup-reader-protocol-v1"
 
     private let channel: Channel
-    private let multiplexer: HTTP2StreamMultiplexer
+    private let multiplexer: NIOHTTP2Handler.StreamMultiplexer
 
-    private init(channel: Channel, multiplexer: HTTP2StreamMultiplexer) {
+    private init(channel: Channel, multiplexer: NIOHTTP2Handler.StreamMultiplexer) {
         self.channel = channel
         self.multiplexer = multiplexer
     }
 
     static func open(_ settings: PBSSettings, secret: String, protocolName: String, path: String, query: [(String, String)]) async throws -> PBSH2Session {
         let group = MultiThreadedEventLoopGroup.singleton
-        let sslContext = try NIOSSLContext(configuration: TLSConfiguration.makeClientConfiguration())
         let pin = settings.fingerprint.map(PBSFingerprint.normalize)
-        let upgraded = group.next().makePromise(of: HTTP2StreamMultiplexer.self)
+        var tlsConfiguration = TLSConfiguration.makeClientConfiguration()
+        // A pinned certificate is trusted as-is, whatever names it carries (PBS is often reached by IP).
+        if pin != nil { tlsConfiguration.certificateVerification = .noHostnameVerification }
+        let sslContext = try NIOSSLContext(configuration: tlsConfiguration)
+        let upgraded = group.next().makePromise(of: NIOHTTP2Handler.StreamMultiplexer.self)
         let host = settings.host
 
         let bootstrap = ClientBootstrap(group: group)
@@ -52,16 +55,14 @@ final class PBSH2Session: @unchecked Sendable {
                     } else {
                         tls = try NIOSSLClientHandler(context: sslContext, serverHostname: isIP ? nil : host)
                     }
-                    let failure = UpgradeFailureHandler(promise: upgraded)
-                    let upgrader = PBSUpgrader(protocolName: protocolName, promise: upgraded)
-                    return channel.pipeline.addHandler(tls).flatMap {
-                        channel.pipeline.addHTTPClientHandlers(
-                            leftOverBytesStrategy: .forwardBytes,
-                            withClientUpgrade: (upgraders: [upgrader], completionHandler: { _ in })
-                        )
-                    }.flatMap {
-                        channel.pipeline.addHandler(failure, name: UpgradeFailureHandler.name)
-                    }
+                    let pipeline = channel.pipeline.syncOperations
+                    try pipeline.addHandler(tls)
+                    try pipeline.addHTTPClientHandlers(
+                        leftOverBytesStrategy: .forwardBytes,
+                        withClientUpgrade: (upgraders: [PBSUpgrader(protocolName: protocolName, promise: upgraded)], completionHandler: { _ in })
+                    )
+                    try pipeline.addHandler(UpgradeFailureHandler(promise: upgraded), name: UpgradeFailureHandler.name)
+                    return channel.eventLoop.makeSucceededVoidFuture()
                 } catch {
                     return channel.eventLoop.makeFailedFuture(error)
                 }
@@ -96,10 +97,12 @@ final class PBSH2Session: @unchecked Sendable {
         let response = channel.eventLoop.makePromise(of: (HTTPResponseHead, ByteBuffer).self)
         let streamPromise = channel.eventLoop.makePromise(of: Channel.self)
         multiplexer.createStreamChannel(promise: streamPromise) { stream in
-            stream.pipeline.addHandlers([
-                HTTP2FramePayloadToHTTP1ClientCodec(httpProtocol: .https),
-                ResponseCollector(promise: response),
-            ])
+            stream.eventLoop.makeCompletedFuture {
+                try stream.pipeline.syncOperations.addHandlers([
+                    HTTP2FramePayloadToHTTP1ClientCodec(httpProtocol: .https),
+                    ResponseCollector(promise: response),
+                ])
+            }
         }
         let stream = try await streamPromise.futureResult.get()
 
@@ -157,9 +160,9 @@ enum PBSFingerprint {
 private final class PBSUpgrader: NIOHTTPClientProtocolUpgrader, @unchecked Sendable {
     let supportedProtocol: String
     let requiredUpgradeHeaders: [String] = []
-    private let promise: EventLoopPromise<HTTP2StreamMultiplexer>
+    private let promise: EventLoopPromise<NIOHTTP2Handler.StreamMultiplexer>
 
-    init(protocolName: String, promise: EventLoopPromise<HTTP2StreamMultiplexer>) {
+    init(protocolName: String, promise: EventLoopPromise<NIOHTTP2Handler.StreamMultiplexer>) {
         supportedProtocol = protocolName
         self.promise = promise
     }
@@ -172,19 +175,19 @@ private final class PBSUpgrader: NIOHTTPClientProtocolUpgrader, @unchecked Senda
         let channel = context.channel
         let promise = self.promise
         // The failure handler only understands HTTP/1 parts; drop it before HTTP/2 frames flow.
-        return context.pipeline.removeHandler(name: UpgradeFailureHandler.name).flatMap {
-            channel.configureHTTP2Pipeline(
-                mode: .client,
-                initialLocalSettings: [
-                    HTTP2Setting(parameter: .maxConcurrentStreams, value: 100),
-                    HTTP2Setting(parameter: .initialWindowSize, value: (1 << 31) - 2),
-                    HTTP2Setting(parameter: .maxFrameSize, value: 4 * 1024 * 1024),
-                ],
-                targetWindowSize: 32 * 1024 * 1024,
-                inboundStreamInitializer: nil
-            )
-        }.map { multiplexer in
-            promise.succeed(multiplexer)
+        return context.pipeline.removeHandler(name: UpgradeFailureHandler.name).flatMapThrowing {
+            var connection = NIOHTTP2Handler.ConnectionConfiguration()
+            connection.initialSettings = [
+                HTTP2Setting(parameter: .maxConcurrentStreams, value: 100),
+                HTTP2Setting(parameter: .initialWindowSize, value: (1 << 31) - 2),
+                HTTP2Setting(parameter: .maxFrameSize, value: 4 * 1024 * 1024),
+            ]
+            var stream = NIOHTTP2Handler.StreamConfiguration()
+            stream.targetWindowSize = 32 * 1024 * 1024
+            // PBS never opens streams towards the client.
+            promise.succeed(try channel.pipeline.syncOperations.configureHTTP2Pipeline(
+                mode: .client, connectionConfiguration: connection, streamConfiguration: stream
+            ) { $0.close() })
         }
     }
 }
@@ -194,11 +197,11 @@ private final class UpgradeFailureHandler: ChannelInboundHandler, RemovableChann
     typealias InboundIn = HTTPClientResponsePart
     static let name = "pbs-upgrade-failure"
 
-    private let promise: EventLoopPromise<HTTP2StreamMultiplexer>
+    private let promise: EventLoopPromise<NIOHTTP2Handler.StreamMultiplexer>
     private var status = 0
     private var body = ByteBuffer()
 
-    init(promise: EventLoopPromise<HTTP2StreamMultiplexer>) { self.promise = promise }
+    init(promise: EventLoopPromise<NIOHTTP2Handler.StreamMultiplexer>) { self.promise = promise }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         switch unwrapInboundIn(data) {

@@ -1,4 +1,12 @@
 import Foundation
+import os
+
+extension String {
+    /// Text from a NUL-terminated C buffer filled in by sysctl, realpath and the like.
+    init(cBuffer: [CChar]) {
+        self = cBuffer.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+    }
+}
 
 struct CommandResult {
     var status: Int32
@@ -48,11 +56,12 @@ enum Shell {
                 }
 
                 // Drain both pipes concurrently so neither can fill up and block the child.
-                var errData = Data()
+                let errData = OSAllocatedUnfairLock(initialState: Data())
                 let group = DispatchGroup()
                 group.enter()
                 DispatchQueue.global().async {
-                    errData = err.fileHandleForReading.readDataToEndOfFile()
+                    let data = err.fileHandleForReading.readDataToEndOfFile()
+                    errData.withLock { $0 = data }
                     group.leave()
                 }
                 let outData = out.fileHandleForReading.readDataToEndOfFile()
@@ -62,7 +71,7 @@ enum Shell {
                 continuation.resume(returning: CommandResult(
                     status: process.terminationStatus,
                     stdout: String(decoding: outData, as: UTF8.self),
-                    stderr: String(decoding: errData, as: UTF8.self)
+                    stderr: String(decoding: errData.withLock { $0 }, as: UTF8.self)
                 ))
             }
         }

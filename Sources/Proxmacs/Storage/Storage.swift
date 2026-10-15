@@ -166,7 +166,7 @@ enum Storage {
             existing.deleteLastPathComponent()
         }
         var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-        let base = realpath(existing.path, &buffer) != nil ? String(cString: buffer) : existing.path
+        let base = realpath(existing.path, &buffer) != nil ? String(cBuffer: buffer) : existing.path
         return rest.reduce(URL(fileURLWithPath: base, isDirectory: true)) { $0.appending(path: $1, directoryHint: .isDirectory) }
     }
 

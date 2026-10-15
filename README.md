@@ -89,6 +89,8 @@ Regenerate them with `scripts/docs-screenshots.swift` (see the comment at its to
 
 ## Requirements
 
+macOS 26 or later on Apple Silicon, and Tart:
+
 ```bash
 brew trust openai/tools && brew install openai/tools/tart
 ```

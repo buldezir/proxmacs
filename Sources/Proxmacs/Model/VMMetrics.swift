@@ -156,7 +156,7 @@ final class VMMetrics {
     private static func path(_ pid: pid_t) -> String? {
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
-        return String(cString: buffer)
+        return String(cBuffer: buffer)
     }
 
     private static func isVMProcess(_ pid: pid_t) -> Bool {

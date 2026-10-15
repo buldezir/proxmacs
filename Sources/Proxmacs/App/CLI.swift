@@ -592,8 +592,10 @@ enum CLI {
             cfmakeraw(&raw)
             tcsetattr(STDIN_FILENO, TCSANOW, &raw)
         }
-        func restoreAndExit() -> Never {
-            if isTTY { tcsetattr(STDIN_FILENO, TCSANOW, &original) }
+        let saved = original
+        @Sendable func restoreAndExit() -> Never {
+            var saved = saved
+            if isTTY { tcsetattr(STDIN_FILENO, TCSANOW, &saved) }
             print("\r\nProxmacs: detached.")
             exit(0)
         }

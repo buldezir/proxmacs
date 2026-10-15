@@ -238,8 +238,7 @@ struct WebAPI: Sendable {
     private func registerVMs(_ router: Router<WebContext>) {
         let state = self.state
         router.get("/api/vms") { _, _ in
-            let list = await MainActor.run { state.vms.map { Self.vmJSON($0, state: state) } }
-            return API.json(list)
+            await MainActor.run { API.json(state.vms.map { Self.vmJSON($0, state: state) }) }
         }
 
         router.post("/api/vms") { request, _ in

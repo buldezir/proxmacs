@@ -55,7 +55,7 @@ extension NetworkInterfaces {
             guard family == AF_INET || family == AF_INET6 else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             guard getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
-            let address = String(cString: host)
+            let address = String(cBuffer: host)
             if family == AF_INET6, address.lowercased().hasPrefix("fe80:") { continue }
             result.append(HostAddress(device: String(cString: ifa.ifa_name), address: address, ipv6: family == AF_INET6))
         }

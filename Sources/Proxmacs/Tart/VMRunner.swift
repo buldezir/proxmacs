@@ -48,7 +48,7 @@ enum VMRunner {
         tcgetattr(slave, &attrs)
         cfmakeraw(&attrs)
         tcsetattr(slave, TCSANOW, &attrs)
-        let slavePath = String(cString: name)
+        let slavePath = String(cBuffer: name)
 
         // 2. Console fan-out: master → log + clients; clients → master.
         let hub = ConsoleHub(master: master, log: consoleLog(vm))
@@ -253,7 +253,7 @@ final class ConsoleHub: @unchecked Sendable {
         if let size = try? logHandle.offset(), size > 1 << 20,
            let full = try? Data(contentsOf: logURL) {
             try? full.suffix(512 * 1024).write(to: logURL)
-            try? logHandle.seekToEnd()
+            _ = try? logHandle.seekToEnd()
         }
     }
 

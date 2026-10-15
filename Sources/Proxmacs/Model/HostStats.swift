@@ -37,7 +37,9 @@ enum HostStats {
         }
         guard result == KERN_SUCCESS else { return nil }
 
-        let page = UInt64(vm_kernel_page_size)
+        var pageSize: vm_size_t = 0
+        host_page_size(mach_host_self(), &pageSize)
+        let page = UInt64(pageSize)
         let app = UInt64(stats.internal_page_count &- stats.purgeable_count) * page
         let wired = UInt64(stats.wire_count) * page
         let compressed = UInt64(stats.compressor_page_count) * page
@@ -57,14 +59,13 @@ enum HostStats {
                           swapUsed: swap.xsu_used, swapTotal: swap.xsu_total, pressure: Int(pressure))
     }
 
-    /// Nested virtualization needs Apple M3 or later (and macOS 15).
+    /// Nested virtualization needs Apple M3 or later.
     static let supportsNestedVirtualization: Bool = {
-        guard #available(macOS 15, *) else { return false }
         var size = 0
         sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
         var buffer = [CChar](repeating: 0, count: max(size, 1))
         sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0)
-        let brand = String(cString: buffer)
+        let brand = String(cBuffer: buffer)
         guard let range = brand.range(of: #"Apple M[0-9]+"#, options: .regularExpression),
               let generation = Int(brand[range].dropFirst("Apple M".count)) else { return false }
         return generation >= 3

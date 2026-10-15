@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Proxmacs: a menubar VM manager for Apple Silicon. It is Swift (SwiftPM, macOS 14+) and shells out to the Homebrew `tart`
+Proxmacs: a menubar VM manager for Apple Silicon. It is Swift 6.2 (SwiftPM, Swift 6 language mode, macOS 26+) and shells out to the Homebrew `tart`
 binary. A React web UI lives in `web/`. See README.md for features, the CLI and the on-disk layout.
 
 ## Build and check
