@@ -416,6 +416,7 @@ final class AppState {
                 try await tart.delete(vm)
             }
             try FileManager.default.removeItem(at: Paths.vmDir(vm))
+            try? Secrets.set("vnc.\(vm)", nil)
             ips[vm] = nil
             guestCache[vm] = nil
             metrics.forget(vm)

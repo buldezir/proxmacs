@@ -931,7 +931,6 @@ private final class ConfiguredVMs: @unchecked Sendable {
 /// so the TCP hop goes through /usr/bin/nc.
 enum VNCBridge {
     static let guestVNCPort = 5900
-    static let legacyVNCPassword = "proxmacs-vnc-demo"
     private static let configured: ConfiguredVMs = ConfiguredVMs()
 
     static func info(for vm: String) async -> (host: String, port: Int, password: String)? {
@@ -941,11 +940,23 @@ enum VNCBridge {
         return (ip, guestVNCPort, password)
     }
 
-    /// Enable RFB auth type 2 with a known password (noVNC cannot speak Apple ARD types).
-    /// At most once per VM per process — kickstart restarts ARD and drops live sessions.
+    /// Secrets.json key for a VM's legacy VNC password.
+    static func secretKey(_ vm: String) -> String { "vnc.\(vm)" }
+
+    /// Per-VM random password for RFB auth type 2 (noVNC cannot speak Apple ARD types).
+    /// Stored in secrets.json; kickstart applies it at most once per VM per process
+    /// (it restarts ARD and would drop live sessions).
     static func ensureLegacyVNC(_ vm: String) -> String {
-        let password = legacyVNCPassword
-        if configured.contains(vm) { return password }
+        if configured.contains(vm), let existing = Secrets.get(secretKey(vm)), !existing.isEmpty {
+            return existing
+        }
+        let password: String
+        if let existing = Secrets.get(secretKey(vm)), !existing.isEmpty {
+            password = existing
+        } else {
+            password = Self.randomPassword()
+            try? Secrets.set(secretKey(vm), password)
+        }
         guard let tart = Tart.locate() else { return password }
         let kickstart = "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
         let script = "sudo -n \(kickstart) -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw \(password) -restart -agent"
@@ -957,6 +968,14 @@ enum VNCBridge {
         _ = sem.wait(timeout: .now() + 25)
         configured.insert(vm)
         return password
+    }
+
+    /// 16 characters from a URL/CLI-safe alphabet (kickstart takes the password as one argv).
+    static func randomPassword() -> String {
+        let alphabet = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        var bytes = [UInt8](repeating: 0, count: 16)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        return String(bytes.map { alphabet[Int($0) % alphabet.count] })
     }
 
     static func guestIP(_ vm: String) async -> String? {
