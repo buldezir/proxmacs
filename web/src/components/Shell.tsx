@@ -20,6 +20,7 @@ import { Badge, Loading, Spinner, StateBadge, StateDot, Tags } from './ui';
 
 // xterm is large; load it with the console tab.
 const ConsoleView = lazy(() => import('../views/vm/Console').then((m) => ({ default: m.ConsoleView })));
+const DisplayView = lazy(() => import('../views/vm/Display').then((m) => ({ default: m.DisplayView })));
 
 const HOST_TABS = [
   ['summary', 'Summary'], ['storage', 'Storage'], ['jobs', 'Backup Jobs'], ['targets', 'Backup Targets'],
@@ -27,7 +28,7 @@ const HOST_TABS = [
 ] as const;
 const VM_TABS = [
   ['summary', 'Summary'], ['hardware', 'Hardware'], ['cloudinit', 'Cloud-Init'], ['options', 'Options'],
-  ['console', 'Console'], ['backups', 'Backups'], ['offsite', 'Offsite'],
+  ['display', 'Display'], ['console', 'Console'], ['backups', 'Backups'], ['offsite', 'Offsite'],
 ] as const;
 
 export type Navigate = (route: Route) => void;
@@ -174,7 +175,7 @@ function Content({ route, navigate }: { route: Route; navigate: Navigate }) {
   const app = useApp();
   const tabs = route.type === 'vm' ? VM_TABS : HOST_TABS;
   const vm = route.type === 'vm' ? app.vm(route.name) : null;
-  const full = route.type === 'vm' && route.tab === 'console';
+  const full = route.type === 'vm' && (route.tab === 'console' || route.tab === 'display');
 
   let body: ReactNode = null;
   if (route.type === 'host') {
@@ -192,6 +193,7 @@ function Content({ route, navigate }: { route: Route; navigate: Navigate }) {
       hardware: <HardwareView {...props} />,
       cloudinit: <CloudInitView {...props} />,
       options: <OptionsView vm={vm} />,
+      display: <Suspense fallback={<Loading />}><DisplayView vm={vm} /></Suspense>,
       console: <Suspense fallback={<Loading />}><ConsoleView vm={vm} /></Suspense>,
       backups: <BackupsView {...props} />,
       offsite: <OffsiteView {...props} />,

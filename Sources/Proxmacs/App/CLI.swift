@@ -7,7 +7,8 @@ enum Entry {
         if args.first == "cli" {
             CLI.run(Array(args.dropFirst()))
         } else {
-            ProxmacsApp.main()
+            FileHandle.standardError.write("headless build: use Proxmacs cli ...\n".data(using: .utf8)!)
+            exit(2)
         }
     }
 }
