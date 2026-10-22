@@ -7,6 +7,7 @@ struct ProxmacsApp: App {
         let state = AppState()
         _state = State(initialValue: state)
         WebServer.shared.start(state: state)
+        AppUpdater.shared.start()
     }
 
     var body: some Scene {

@@ -3,6 +3,7 @@ import SwiftUI
 struct MenuContent: View {
     @Environment(AppState.self) private var state
     @Environment(\.openWindow) private var openWindow
+    private let updater = AppUpdater.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -72,6 +73,11 @@ struct MenuContent: View {
                     NSWorkspace.shared.open(Paths.support)
                 } label: { Image(systemName: "folder") }
                     .help("Open data folder")
+                if updater.isRelease {
+                    Button(updater.menuTitle) { updater.checkForUpdates() }
+                        .disabled(!updater.canCheck && updater.available == nil)
+                        .help("VMs keep running while Proxmacs updates")
+                }
                 Button("Quit") { NSApp.terminate(nil) }
                     .help("VMs keep running after quitting")
             }
