@@ -580,3 +580,9 @@ input.narrow { width: 90px; }
 .vm-checks { display: flex; flex-wrap: wrap; gap: 6px 16px; max-height: 180px; overflow: auto; }
 .form-row .grow { flex: 1; min-width: min(100%, 220px); }
 .field > .segmented { align-self: flex-start; max-width: 100%; }
+
+/* display (noVNC) */
+.display-box { position: relative; flex: 1; min-height: 420px; background: #000; border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; }
+.display-host { position: absolute; inset: 0; }
+.display-host canvas { display: block; }
+.display-host { overflow: auto; background: #111; }

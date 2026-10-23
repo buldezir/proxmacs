@@ -87,19 +87,25 @@ enum TargetStore {
 /// The login Keychain would prompt on every rebuild of an ad-hoc signed binary, so a file
 /// with owner-only permissions (like ~/.ssh) is the pragmatic choice for this prototype.
 enum Secrets {
-    static let file = Paths.support.appending(path: "secrets.json")
+    /// Var so tests can point at a scratch file.
+    nonisolated(unsafe) static var file = Paths.support.appending(path: "secrets.json")
+    private static let lock = NSLock()
 
     static func get(_ key: String) -> String? {
-        all()[key]
+        lock.withLock { all()[key] }
     }
 
+    /// The whole file is re-encoded on write, so the read-modify-write has to be serialized
+    /// or a concurrent save (a target, a VNC credential) can lose the other's key.
     static func set(_ key: String, _ value: String?) throws {
-        var secrets = all()
-        secrets[key] = value
-        let data = try JSONEncoder.proxmacs.encode(secrets)
-        FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600])
-        try data.write(to: file, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        try lock.withLock {
+            var secrets = all()
+            secrets[key] = value
+            let data = try JSONEncoder.proxmacs.encode(secrets)
+            FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600])
+            try data.write(to: file, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        }
     }
 
     private static func all() -> [String: String] {
