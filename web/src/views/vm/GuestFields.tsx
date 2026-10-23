@@ -70,7 +70,7 @@ export function GuestFields({ value: f, onChange, passwordState, natHint }: {
   passwordState?: CloudInit['password'];
   natHint?: boolean;
 }) {
-  const { report } = useToast();
+  const { toast, report } = useToast();
   const [loadingKeys, setLoadingKeys] = useState(false);
   const set = (patch: Partial<GuestForm>) => onChange({ ...f, ...patch });
   const editing = passwordState !== undefined;
@@ -80,7 +80,16 @@ export function GuestFields({ value: f, onChange, passwordState, natHint }: {
     try {
       const keys = await api<string[]>('GET', '/api/host/sshkeys');
       const current = splitKeys(f.sshKeys);
-      set({ sshKeys: [...current, ...keys.filter((k) => !current.includes(k))].join('\n') });
+      const fresh = keys.filter((k) => !current.includes(k));
+      // A click that changes nothing must still say why: the endpoint legitimately
+      // returns an empty list when this Mac has no keys, and silence reads as a bug.
+      if (!fresh.length) {
+        toast(keys.length
+          ? 'Those keys are already in the list'
+          : 'This Mac has no SSH public keys in ~/.ssh. Generate one with `ssh-keygen -t ed25519`, or paste a key below.', keys.length ? 'info' : 'error');
+        return;
+      }
+      set({ sshKeys: [...current, ...fresh].join('\n') });
     } catch (e) {
       report(e);
     } finally {
