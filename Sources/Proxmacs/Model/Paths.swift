@@ -34,8 +34,6 @@ enum Paths {
     static func metaFile(_ name: String) -> URL { vmDir(name).appending(path: "meta.json") }
     static func seedISO(_ name: String) -> URL { vmDir(name).appending(path: "seed.iso") }
     static func runLog(_ name: String) -> URL { vmDir(name).appending(path: "run.log") }
-    /// Written by VMRunner once tart reports its VNC URL; read by the web VNC bridge.
-    static func vncPortFile(_ name: String) -> URL { vmDir(name).appending(path: "vnc.port") }
 
     static func backupsDir(_ name: String) -> URL { backups.appending(path: name, directoryHint: .isDirectory) }
 

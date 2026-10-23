@@ -219,7 +219,9 @@ final class APIKeyTests: XCTestCase {
 
         XCTAssertEqual(store.authenticate(secret)?.id, key.id)
         XCTAssertNotNil(store.lastUsed()[key.id])
-        XCTAssertNil(store.authenticate(secret.dropLast() + "0"))
+        // "z" is outside the hex alphabet, so the one-character near-miss can never
+        // come out equal to the original the way "0" does for tokens ending in "0".
+        XCTAssertNil(store.authenticate(secret.dropLast() + "z"))
         XCTAssertNil(store.authenticate(""))
 
         XCTAssertThrowsError(try store.create(name: "backup-script"), "names are unique")

@@ -198,6 +198,17 @@ final class AppState {
         }
     }
 
+    /// The guest IP for the web Display tab: the cached one, or a fresh mode-aware lookup.
+    /// `refresh` fills the same cache on its 5-second round; asking here avoids the tab
+    /// re-resolving with a fixed resolver order and ignoring the network mode.
+    func ip(_ vm: String) async -> String? {
+        if let cached = ips[vm] { return cached }
+        guard let tart, let item = item(vm) else { return nil }
+        let ip = await resolveIP(item, tart: tart)
+        ips[vm] = ip
+        return ip
+    }
+
     // MARK: - Tasks
 
     /// Handle passed to task bodies for progress/message updates (callable from any thread).
@@ -416,7 +427,7 @@ final class AppState {
                 try await tart.delete(vm)
             }
             try FileManager.default.removeItem(at: Paths.vmDir(vm))
-            try? Secrets.set("vnc.\(vm)", nil)
+            try? VNCCredentials.clear(vm)
             ips[vm] = nil
             guestCache[vm] = nil
             metrics.forget(vm)

@@ -745,22 +745,43 @@ struct WebAPI: Sendable {
     // MARK: VNC (browser display via noVNC)
 
     private func registerVNC(_ router: Router<WebContext>) {
-        router.get("/api/vms/:name/vnc") { _, context in
+        // The guest macOS account that signs in to Screen Sharing. GET is the one endpoint
+        // that hands a stored secret back out: noVNC answers the RFB handshake client-side,
+        // so auto-fill needs it. It goes only to the authenticated session that asked.
+        router.get("/api/vms/:name/vnc/credentials") { _, context in
             await API.guarded {
-                let name = try WebAPI.param(context, "name")
-                guard let info = await VNCBridge.info(for: name) else {
-                    throw APIError(message: "VNC is not available (VM not running or guest Screen Sharing is off?)")
-                }
-                return API.json(["host": info.host, "port": info.port, "password": info.password])
+                let name = try await Self.requireVM(state, context)
+                let credentials = VNCCredentials.load(name)
+                let user: Any = credentials?.username ?? NSNull()
+                let pass: Any = credentials?.password ?? NSNull()
+                return API.json(["username": user, "password": pass])
             }
         }
-        // Separate path from GET /api/vms/:name/vnc: Hummingbird cannot register HTTP and WS on the same path.
+        router.put("/api/vms/:name/vnc/credentials") { request, context in
+            await API.guarded {
+                let name = try await Self.requireVM(state, context)
+                let body = try await API.body(request)
+                guard let username = body["username"] as? String, !username.isEmpty,
+                      let password = body["password"] as? String, !password.isEmpty else {
+                    throw APIError(message: "username and password are required")
+                }
+                try VNCCredentials.save(name, username: username, password: password)
+                return API.noContent()
+            }
+        }
+        router.delete("/api/vms/:name/vnc/credentials") { _, context in
+            await API.guarded {
+                let name = try await Self.requireVM(state, context)
+                try VNCCredentials.clear(name)
+                return API.noContent()
+            }
+        }
         router.ws("/api/vms/:name/vnc/ws") { _, context in
             guard context.parameters.get("name") != nil else { return .dontUpgrade }
             return .upgrade([:])
         } onUpgrade: { inbound, outbound, context in
             guard let name = context.requestContext.parameters.get("name") else { return }
-            try await VNCBridge.run(vm: name, inbound: inbound, outbound: outbound)
+            try await VNCBridge.run(state: state, vm: name, inbound: inbound, outbound: outbound)
         }
     }
 
@@ -904,195 +925,5 @@ enum ConsoleBridge {
             let n = bytes.withUnsafeBytes { write(fd, $0.baseAddress! + offset, bytes.count - offset) }
             if n > 0 { offset += n } else if errno == EAGAIN || errno == EINTR { usleep(1000) } else { return }
         }
-    }
-}
-
-/// Bridges the guest's Screen Sharing (VNC, port 5900) to a WebSocket for noVNC.
-///
-/// Direct connect(2) from this binary fails with EHOSTUNREACH on macOS 15+ (Local Network
-/// privacy) when the target is a LAN address. Shell out to /usr/bin/nc under the user's
-/// GUI session (launchctl asuser) so the relay inherits Local Network access.
-/// Once-per-process set of VMs whose guest VNC was configured (kickstart restarts ARD).
-private final class ConfiguredVMs: @unchecked Sendable {
-    private let lock = NSLock()
-    private var names = Set<String>()
-    func contains(_ name: String) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        return names.contains(name)
-    }
-    func insert(_ name: String) {
-        lock.lock(); defer { lock.unlock() }
-        names.insert(name)
-    }
-}
-
-/// Bridges the guest's Screen Sharing (legacy VNC on :5900) to a WebSocket for noVNC.
-/// connect(2) to LAN addresses is blocked by macOS Local Network privacy for this binary,
-/// so the TCP hop goes through /usr/bin/nc.
-enum VNCBridge {
-    static let guestVNCPort = 5900
-    private static let configured: ConfiguredVMs = ConfiguredVMs()
-
-    static func info(for vm: String) async -> (host: String, port: Int, password: String)? {
-        guard let ip = await guestIP(vm) else { return nil }
-        let password = ensureLegacyVNC(vm)
-        guard tcpReachable(host: ip, port: guestVNCPort) else { return nil }
-        return (ip, guestVNCPort, password)
-    }
-
-    /// Secrets.json key for a VM's legacy VNC password.
-    static func secretKey(_ vm: String) -> String { "vnc.\(vm)" }
-
-    /// Per-VM random password for RFB auth type 2 (noVNC cannot speak Apple ARD types).
-    /// Stored in secrets.json; kickstart applies it at most once per VM per process
-    /// (it restarts ARD and would drop live sessions).
-    static func ensureLegacyVNC(_ vm: String) -> String {
-        if configured.contains(vm), let existing = Secrets.get(secretKey(vm)), !existing.isEmpty {
-            return existing
-        }
-        let password: String
-        if let existing = Secrets.get(secretKey(vm)), !existing.isEmpty {
-            password = existing
-        } else {
-            password = Self.randomPassword()
-            try? Secrets.set(secretKey(vm), password)
-        }
-        guard let tart = Tart.locate() else { return password }
-        let kickstart = "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
-        let script = "sudo -n \(kickstart) -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw \(password) -restart -agent"
-        let sem = DispatchSemaphore(value: 0)
-        Task.detached {
-            _ = try? await tart.exec(vm, ["/bin/sh", "-c", script], timeout: 20)
-            sem.signal()
-        }
-        _ = sem.wait(timeout: .now() + 25)
-        configured.insert(vm)
-        return password
-    }
-
-    /// 16 characters from a URL/CLI-safe alphabet (kickstart takes the password as one argv).
-    static func randomPassword() -> String {
-        let alphabet = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-        var bytes = [UInt8](repeating: 0, count: 16)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        return String(bytes.map { alphabet[Int($0) % alphabet.count] })
-    }
-
-    static func guestIP(_ vm: String) async -> String? {
-        guard let tart = Tart.locate() else { return nil }
-        for resolver in ["agent", "dhcp", "arp"] {
-            if let out = try? await tart.run(["ip", vm, "--wait", "3", "--resolver", resolver], timeout: 8) {
-                let ip = out.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !ip.isEmpty { return ip }
-            }
-        }
-        return nil
-    }
-
-    static func tcpReachable(host: String, port: Int) -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
-        process.arguments = ["-z", "-G", "2", host, String(port)]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
-        } catch {
-            return false
-        }
-    }
-
-    static func run(vm: String, inbound: WebSocketInboundStream, outbound: WebSocketOutboundWriter) async throws {
-        FileHandle.standardError.write(Data("vnc run enter \(vm)\n".utf8))
-        guard let info = await info(for: vm) else {
-            try await outbound.close(.unexpectedServerError, reason: "VNC not available")
-            return
-        }
-        FileHandle.standardError.write(Data("vnc run info \(info.host):\(info.port)\n".utf8))
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
-        process.arguments = [info.host, String(info.port)]
-        let stdin = Pipe()
-        let stdout = Pipe()
-        process.standardInput = stdin
-        process.standardOutput = stdout
-        process.standardError = FileHandle.nullDevice
-        process.terminationHandler = { proc in
-            FileHandle.standardError.write(Data("vnc nc exit \(proc.terminationStatus)\n".utf8))
-        }
-        try process.run()
-        let input = stdin.fileHandleForWriting
-        // Prevent the write end from closing (EOF would make nc exit).
-        input.write(Data())
-        let outFD = stdout.fileHandleForReading.fileDescriptor
-        let flags = fcntl(outFD, F_GETFL)
-        _ = fcntl(outFD, F_SETFL, flags | O_NONBLOCK)
-        FileHandle.standardError.write(Data("vnc nc pid \(process.processIdentifier)\n".utf8))
-
-        let output = AsyncStream<Data> { continuation in
-            let source = DispatchSource.makeReadSource(fileDescriptor: outFD, queue: .global())
-            source.setEventHandler {
-                var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-                while true {
-                    let n = read(outFD, &buffer, buffer.count)
-                    if n > 0 {
-                        continuation.yield(Data(buffer[0..<n]))
-                    } else {
-                        if n == 0 || (errno != EAGAIN && errno != EINTR) { continuation.finish() }
-                        break
-                    }
-                }
-            }
-            continuation.onTermination = { _ in
-                source.cancel()
-                if process.isRunning { process.terminate() }
-            }
-            source.resume()
-        }
-
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                do {
-                    // Apple Screen Sharing lists ARD types first (30/33/36); noVNC only
-                    // speaks type 2 (VNC auth). Rewrite the security-types packet once.
-                    var phase = 0 // 0=before banner, 1=after banner, 2=done
-                    for await data in output {
-                        var out = data
-                        if phase <= 1 {
-                            if phase == 0, data.starts(with: Data("RFB ".utf8)) {
-                                phase = 1
-                            } else if phase == 1, data.first == 5, data.count >= 2 {
-                                // 0x05 = 5 security types; collapse to a single type 2.
-                                out = Data([1, 2])
-                                phase = 2
-                            }
-                        }
-                        try await outbound.write(.binary(ByteBuffer(bytes: out)))
-                    }
-                    try? await outbound.close(.goingAway, reason: "vnc closed")
-                } catch {
-                    FileHandle.standardError.write(Data("vnc out err \(error)\n".utf8))
-                }
-            }
-            group.addTask {
-                do {
-                    for try await message in inbound.messages(maxSize: 1 << 20) {
-                        let bytes: [UInt8] = switch message {
-                        case .text(let text): Array(text.utf8)
-                        case .binary(let buffer): Array(buffer.readableBytesView)
-                        }
-                        if !bytes.isEmpty { input.write(Data(bytes)) }
-                    }
-                } catch {
-                    FileHandle.standardError.write(Data("vnc in err \(error)\n".utf8))
-                }
-            }
-            await group.waitForAll()
-        }
-        if process.isRunning { process.terminate() }
-        FileHandle.standardError.write(Data("vnc run exit \(vm)\n".utf8))
     }
 }

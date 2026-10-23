@@ -35,15 +35,6 @@ let package = Package(
                 .product(name: "HTTPTypes", package: "swift-http-types"),
             ],
             path: "Sources/Proxmacs",
-            // Headless build for Command Line Tools (no SwiftUIMacros). Menubar UI excluded.
-            exclude: [
-                "App/ProxmacsApp.swift",
-                "UI/APIKeysView.swift",
-                "UI/BackupsView.swift",
-                "UI/MenuContent.swift",
-                "UI/NewVMView.swift",
-                "UI/VMRowView.swift",
-            ],
             // Served from disk (copied into the .app by scripts/build-app.sh), not via Bundle.module.
             linkerSettings: [.linkedFramework("NetFS")]
         ),
