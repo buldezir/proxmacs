@@ -218,3 +218,20 @@ messages; text or binary messages from the client are typed into the console. Fo
 ```bash
 websocat -k -H "Authorization: Bearer $KEY" wss://mac-mini.local:8006/api/vms/web01/console
 ```
+
+### Display (VNC)
+
+`GET /api/vms/:name/vnc/ws` upgrades to a WebSocket (`wss://` with TLS) that relays the guest's Screen Sharing
+service (RFB, `<guest ip>:5900`) byte for byte — a websockify-style bridge for a client like noVNC. The VM must be
+running and have an address. Frames in both directions are raw RFB (binary WebSocket messages, with text treated as
+its UTF-8 bytes); the client negotiates RFB itself, including Apple ARD auth (type 30) with a guest macOS account.
+Nothing is rewritten. The server closes the socket with a reason string when the VM has no address, Screen Sharing is
+off and could not be enabled, or macOS Local Network privacy is blocking the connection.
+
+Credentials for that account are kept in `secrets.json` and managed with:
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/vms/:name/vnc/credentials` | `{username, password}`, each `null` when nothing is stored. The one endpoint that returns a stored secret: the browser needs it to answer the RFB handshake |
+| `PUT /api/vms/:name/vnc/credentials` | `{"username": …, "password": …}` → 204 |
+| `DELETE /api/vms/:name/vnc/credentials` | Forget the pair → 204 |

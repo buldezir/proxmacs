@@ -19,6 +19,7 @@ struct WebAPI: Sendable {
         registerJobs(router)
         registerNotifications(router)
         registerConsole(router)
+        registerVNC(router)
     }
 
     // MARK: Auth
@@ -738,6 +739,49 @@ struct WebAPI: Sendable {
         } onUpgrade: { inbound, outbound, context in
             guard let name = context.requestContext.parameters.get("name") else { return }
             try await ConsoleBridge.run(vm: name, inbound: inbound, outbound: outbound)
+        }
+    }
+
+    // MARK: VNC (browser display via noVNC)
+
+    private func registerVNC(_ router: Router<WebContext>) {
+        // The guest macOS account that signs in to Screen Sharing. GET is the one endpoint
+        // that hands a stored secret back out: noVNC answers the RFB handshake client-side,
+        // so auto-fill needs it. It goes only to the authenticated session that asked.
+        router.get("/api/vms/:name/vnc/credentials") { _, context in
+            await API.guarded {
+                let name = try await Self.requireVM(state, context)
+                let credentials = VNCCredentials.load(name)
+                let user: Any = credentials?.username ?? NSNull()
+                let pass: Any = credentials?.password ?? NSNull()
+                return API.json(["username": user, "password": pass])
+            }
+        }
+        router.put("/api/vms/:name/vnc/credentials") { request, context in
+            await API.guarded {
+                let name = try await Self.requireVM(state, context)
+                let body = try await API.body(request)
+                guard let username = body["username"] as? String, !username.isEmpty,
+                      let password = body["password"] as? String, !password.isEmpty else {
+                    throw APIError(message: "username and password are required")
+                }
+                try VNCCredentials.save(name, username: username, password: password)
+                return API.noContent()
+            }
+        }
+        router.delete("/api/vms/:name/vnc/credentials") { _, context in
+            await API.guarded {
+                let name = try await Self.requireVM(state, context)
+                try VNCCredentials.clear(name)
+                return API.noContent()
+            }
+        }
+        router.ws("/api/vms/:name/vnc/ws") { _, context in
+            guard context.parameters.get("name") != nil else { return .dontUpgrade }
+            return .upgrade([:])
+        } onUpgrade: { inbound, outbound, context in
+            guard let name = context.requestContext.parameters.get("name") else { return }
+            try await VNCBridge.run(state: state, vm: name, inbound: inbound, outbound: outbound)
         }
     }
 

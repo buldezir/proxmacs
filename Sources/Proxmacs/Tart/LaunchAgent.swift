@@ -12,6 +12,8 @@ enum LaunchAgent {
 
     /// Arguments for `tart` (without the executable) as run by VMRunner.
     static func tartRunArguments(meta: VMMeta, serialPath: String) -> [String] {
+        // No --vnc-experimental: VZVNCServer asserts/crashes tart on client connect (macOS 27).
+        // Browser display uses the guest's Screen Sharing (VNC) on <vm-ip>:5900 instead.
         var args = ["run", meta.name, "--no-graphics", "--serial-path", serialPath]
         // Extra disks come before the seed so they keep their names (/dev/vdb, …) whether or not there is one.
         for disk in meta.disks {
