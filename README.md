@@ -100,7 +100,8 @@ Use the Homebrew build. A Tart built from source lacks the bridging entitlement.
 ## Install
 
 Download `Proxmacs-macOS-arm64.zip` from [Releases](https://github.com/buldezir/proxmacs/releases), unzip it and drag
-`Proxmacs.app` into Applications before you open it.
+`Proxmacs.app` into Applications before you open it. Turn on **Open at Login** in its menubar window: backup jobs and
+the web UI run only while Proxmacs is open (VMs that start on login don't need it).
 
 It is signed with Developer ID and notarized by Apple, and updates itself: **Check for Updates…** is in the menubar
 window, and VMs keep running while it updates. If it says it can't be updated, it is running from the temporary copy

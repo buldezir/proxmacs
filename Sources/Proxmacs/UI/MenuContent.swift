@@ -1,3 +1,4 @@
+import ServiceManagement
 import SwiftUI
 
 struct MenuContent: View {
@@ -61,6 +62,13 @@ struct MenuContent: View {
             WebUISection()
 
             Divider()
+
+            // A debug build isn't an app, so it can't be a login item.
+            if Bundle.main.bundleURL.pathExtension == "app" {
+                OpenAtLoginSection()
+
+                Divider()
+            }
 
             HStack {
                 Button("New VM…") {
@@ -150,6 +158,43 @@ struct WebUISection: View {
         } catch {
             state.lastError = error.localizedDescription
         }
+    }
+}
+
+/// The app as a login item (System Settings → General → Login Items). Backup jobs and the web UI run
+/// only while the app is open; VMs that start on login don't need it, they have their own LaunchAgents.
+struct OpenAtLoginSection: View {
+    @Environment(AppState.self) private var state
+    @State private var status = SMAppService.mainApp.status
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Open at Login").font(.subheadline.weight(.medium))
+                Spacer()
+                Toggle("", isOn: Binding(get: { status == .enabled || status == .requiresApproval }, set: setEnabled))
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .labelsHidden()
+            }
+            .help("Backup jobs and the web UI run while Proxmacs is open")
+            if status == .requiresApproval {
+                Button("Allow Proxmacs in Login Items…") { SMAppService.openSystemSettingsLoginItems() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
+        }
+        // The user can change it in System Settings too.
+        .onAppear { status = SMAppService.mainApp.status }
+    }
+
+    private func setEnabled(_ enabled: Bool) {
+        do {
+            if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch {
+            state.lastError = "Couldn't change Open at Login: \(error.localizedDescription)"
+        }
+        status = SMAppService.mainApp.status
     }
 }
 
