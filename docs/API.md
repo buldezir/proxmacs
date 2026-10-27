@@ -225,13 +225,18 @@ websocat -k -H "Authorization: Bearer $KEY" wss://mac-mini.local:8006/api/vms/we
 service (RFB, `<guest ip>:5900`) byte for byte — a websockify-style bridge for a client like noVNC. The VM must be
 running and have an address. Frames in both directions are raw RFB (binary WebSocket messages, with text treated as
 its UTF-8 bytes); the client negotiates RFB itself, including Apple ARD auth (type 30) with a guest macOS account.
-Nothing is rewritten. The server closes the socket with a reason string when the VM has no address, Screen Sharing is
-off and could not be enabled, or macOS Local Network privacy is blocking the connection.
+Nothing is rewritten. The server closes the socket with a reason string when the VM isn't running or has no address,
+nothing listens on port 5900, or macOS Local Network privacy is blocking the connection. When Screen Sharing is off in
+a macOS guest, the close code is `4001`.
+
+| Route | What it does |
+| --- | --- |
+| `POST /api/vms/:name/vnc/setup` | macOS guests: turns Screen Sharing on if nothing listens on 5900, otherwise grants local accounts observe-and-control if nobody has any. Needs the tart guest agent and passwordless `sudo` in the guest. → `{"changed": bool, "message": "…"}` |
 
 Credentials for that account are kept in `secrets.json` and managed with:
 
 | Route | What it does |
 | --- | --- |
-| `GET /api/vms/:name/vnc/credentials` | `{username, password}`, each `null` when nothing is stored. The one endpoint that returns a stored secret: the browser needs it to answer the RFB handshake |
+| `GET /api/vms/:name/vnc/credentials` | `{username, password}`, each `null` when nothing is stored. The one endpoint that returns a stored secret, because the browser needs it to answer the RFB handshake, so it takes a web UI session only: an API key gets 403 |
 | `PUT /api/vms/:name/vnc/credentials` | `{"username": …, "password": …}` → 204 |
 | `DELETE /api/vms/:name/vnc/credentials` | Forget the pair → 204 |

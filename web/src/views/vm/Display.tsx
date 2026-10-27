@@ -7,31 +7,22 @@ import type { VM } from '../../types';
 
 // @novnc/novnc ships CJS with exports.default; Vite can leave it double-wrapped as
 // { default: { default: RFB } }. Unwrap so `new RFB(...)` always gets the class.
-interface RFBInstance {
-  scaleViewport: boolean;
-  resizeSession: boolean;
-  viewOnly: boolean;
-  disconnect(): void;
-  sendCredentials(credentials: { username?: string; password?: string }): void;
-  addEventListener(type: string, listener: (event: CustomEvent) => void): void;
-  removeEventListener(type: string, listener: (event: CustomEvent) => void): void;
-}
-type RFBConstructor = new (
-  target: HTMLElement,
-  urlOrChannel: string | WebSocket,
-  options?: { shared?: boolean; credentials?: { username?: string; password?: string } },
-) => RFBInstance;
-const RFB = ((RFBImport as unknown as { default?: unknown })?.default ?? RFBImport) as unknown as RFBConstructor;
+const RFB = (RFBImport as unknown as { default?: typeof RFBImport }).default ?? RFBImport;
+type RFBInstance = InstanceType<typeof RFB>;
 
 type Status = { text: string; kind: '' | 'ok' | 'warn' | 'err' };
 type Credentials = { username: string; password: string };
 
-const SECRET_HINT = 'Stored on this Mac in an owner-only file; never shown again.';
+const NOT_CONNECTED: Status = { text: 'Not connected', kind: '' };
+const SECRET_HINT = 'Kept on this Mac in an owner-only file. Anyone who signs in to this web UI can connect with it.';
+const SETUP_HINT = 'Turns Screen Sharing on in the guest, and lets its local accounts observe and control it. '
+  + 'Needs the tart guest agent and passwordless sudo there.';
+/** Close code the server uses for "Screen Sharing is off" in a macOS guest (VNCBridge.screenSharingOff). */
+const SCREEN_SHARING_OFF = 4001;
 
 /** Browser display: the guest's Screen Sharing (RFB) session, proxied to noVNC over WebSocket. */
 export function DisplayView({ vm }: { vm: VM }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const boxRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<RFBInstance | null>(null);
   // Bumped by every connect/teardown so an async continuation from an earlier attempt
   // cannot drive the UI of the current one.
@@ -48,12 +39,20 @@ export function DisplayView({ vm }: { vm: VM }) {
   // both the WebSocket close reason and whatever `securityfailure` said — so the reason
   // is recorded here and rendered once the connection is actually gone.
   const outcomeRef = useRef<string | null>(null);
-  const [status, setStatus] = useState<Status>({ text: 'Not connected', kind: '' });
+  // Whether the guest asked for Apple ARD auth (user name and password): only a macOS
+  // guest does, and only there can a rejected sign-in be a setup problem.
+  const ardRef = useRef(false);
+  const [status, setStatus] = useState<Status>(NOT_CONNECTED);
   const [closeReason, setCloseReason] = useState<string | null>(null);
   const [disconnected, setDisconnected] = useState(false);
   const [hasSaved, setHasSaved] = useState(false);
   const [prompt, setPrompt] = useState<{ types: string[]; username: string } | null>(null);
+  // Offered when Screen Sharing is off or turns down a sign-in. It changes the guest's
+  // settings, so it only ever runs from this button.
+  const [offerSetup, setOfferSetup] = useState(false);
+  const [settingUp, setSettingUp] = useState(false);
   const name = vm.name;
+  const running = vm.state === 'running';
 
   const teardown = () => {
     genRef.current += 1;
@@ -61,6 +60,7 @@ export function DisplayView({ vm }: { vm: VM }) {
     answeredRef.current = false;
     pendingSaveRef.current = null;
     outcomeRef.current = null;
+    ardRef.current = false;
     const rfb = rfbRef.current;
     if (!rfb) return;
     rfbRef.current = null;
@@ -76,6 +76,7 @@ export function DisplayView({ vm }: { vm: VM }) {
     setCloseReason(null);
     outcomeRef.current = null;
     setPrompt(null);
+    setOfferSetup(false);
     setStatus({ text: 'Connecting…', kind: 'warn' });
     host.innerHTML = '';
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -86,6 +87,7 @@ export function DisplayView({ vm }: { vm: VM }) {
     socket.addEventListener('close', (e: CloseEvent) => {
       if (gen !== genRef.current) return;
       if (e.reason) outcomeRef.current = e.reason;
+      if (e.code === SCREEN_SHARING_OFF) setOfferSetup(true);
     });
     // Fetched here so `credentialsrequired` can answer without a second round trip.
     const prefetch = api<{ username: string | null; password: string | null }>('GET', `/api/vms/${enc(name)}/vnc/credentials`)
@@ -148,11 +150,15 @@ export function DisplayView({ vm }: { vm: VM }) {
       setCloseReason(outcomeRef.current);
       setDisconnected(true);
       setStatus({ text: 'Sign-in rejected', kind: 'err' });
+      // Remote Management can leave every account without rights, and then the guest
+      // turns down any password.
+      if (ardRef.current) setOfferSetup(true);
     });
     rfb.addEventListener('credentialsrequired', (e: CustomEvent) => {
       void (async () => {
         // Apple ARD auth asks for ["username","password"]; RFB type 2 asks for ["password"].
         const types = (e as { detail?: { types?: string[] } })?.detail?.types ?? ['password'];
+        ardRef.current = types.includes('username');
         if (savedRef.current === undefined) {
           const saved = await prefetch;
           if (gen !== genRef.current || rfbRef.current !== rfb) return;
@@ -174,8 +180,17 @@ export function DisplayView({ vm }: { vm: VM }) {
     });
   }, [name]);
 
+  // Connects on opening the tab only if the VM runs: a stopped VM has no address worth
+  // trying. `running` is read once per VM on purpose: a VM that has just started is still
+  // booting, so its tab waits for Reconnect instead of failing on its own.
   useEffect(() => {
-    connect();
+    if (running) {
+      connect();
+    } else {
+      setStatus(NOT_CONNECTED);
+      setCloseReason('Not connected yet. Reconnect once the VM has finished booting.');
+      setDisconnected(true);
+    }
     return () => teardown();
   }, [connect]);
 
@@ -190,6 +205,26 @@ export function DisplayView({ vm }: { vm: VM }) {
     rfb.sendCredentials({ username: credentials.username, password: credentials.password });
   };
 
+  const setUp = async () => {
+    const gen = genRef.current;
+    setSettingUp(true);
+    try {
+      const outcome = await api<{ changed: boolean; message: string }>('POST', `/api/vms/${enc(name)}/vnc/setup`);
+      // Left the tab or reconnected meanwhile: that attempt owns the UI now.
+      if (gen !== genRef.current) return;
+      if (outcome.changed) {
+        connect();
+      } else {
+        setOfferSetup(false);
+        setCloseReason(outcome.message);
+      }
+    } catch (e) {
+      if (gen === genRef.current) setCloseReason(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSettingUp(false);
+    }
+  };
+
   const forget = async () => {
     try {
       await api('DELETE', `/api/vms/${enc(name)}/vnc/credentials`);
@@ -200,7 +235,7 @@ export function DisplayView({ vm }: { vm: VM }) {
     }
   };
 
-  const overlayText = vm.state !== 'running'
+  const overlayText = !running
     ? `The VM is ${vm.state}. Start it, then reconnect.`
     : closeReason ?? 'The display connection was closed.';
 
@@ -212,13 +247,21 @@ export function DisplayView({ vm }: { vm: VM }) {
         <Badge kind={status.kind}>{status.text}</Badge>
         <button type="button" className="btn small" onClick={connect}>Reconnect</button>
       </div>
-      <div ref={boxRef} className="display-box">
+      <div className="display-box">
         <div ref={hostRef} className="display-host" />
         {disconnected && (
           <div className="term-overlay">
             <strong>Disconnected</strong>
             <div className="small">{overlayText}</div>
             <button type="button" className="btn primary" onClick={connect}>Reconnect</button>
+            {offerSetup && running && (
+              <>
+                <button type="button" className="btn" onClick={setUp} disabled={settingUp}>
+                  {settingUp ? 'Setting up…' : 'Set up Screen Sharing'}
+                </button>
+                <div className="small display-hint">{SETUP_HINT}</div>
+              </>
+            )}
             {hasSaved && (
               <button type="button" className="btn" onClick={forget}>Forget saved credentials</button>
             )}
@@ -251,7 +294,7 @@ function CredentialsPrompt({ vm, types, username, onCancel, onConnect }: {
 }) {
   const [user, setUser] = useState(username);
   const [password, setPassword] = useState('');
-  const [remember, setRemember] = useState(true);
+  const [remember, setRemember] = useState(false);
   const [busy, setBusy] = useState(false);
   const wantsUser = types.includes('username');
   const submit = async (e: FormEvent) => {

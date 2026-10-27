@@ -51,6 +51,24 @@ final class VNCHopTests: XCTestCase {
         link.close()
     }
 
+    /// Each hop opens a socketpair and a pipe, and closing it must give both back: the app
+    /// has about 256 descriptors, and every Display reconnect through the fallback opens a
+    /// new hop. Before the fix, 10 hops left 20 descriptors behind.
+    func testNcHopClosesItsDescriptors() async throws {
+        func openDescriptors() -> Int { (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? 0 }
+        // One hop first, so descriptors that are opened lazily on first use don't count.
+        try NcHop(host: "127.0.0.1", port: server.port).close()
+        try await Task.sleep(for: .milliseconds(300))
+        let before = openDescriptors()
+        for _ in 0..<10 {
+            try NcHop(host: "127.0.0.1", port: server.port).close()
+        }
+        // The reading end closes on the read source's queue, and the mock's side of each
+        // connection on its event loop.
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertLessThan(openDescriptors() - before, 5)
+    }
+
     func testClassifyDistinguishesPrivacyFromRefusal() {
         let refused = IOError(errnoCode: ECONNREFUSED, reason: "connect")
         guard case GuestLinkError.refused = GuestLink.classify(refused) else {

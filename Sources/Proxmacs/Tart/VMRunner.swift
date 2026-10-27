@@ -61,8 +61,6 @@ enum VMRunner {
         process.environment = Tart.environment
         try process.run()
         print("proxmacs: started tart (pid \(process.processIdentifier)), console on \(slavePath)")
-        // Browser display uses the guest's Screen Sharing (VNC) at <ip>:5900.
-        // Do not use tart --vnc-experimental: VZVNCServer asserts and kills tart on connect.
         if let provisioning {
             Task.detached { await confirmProvisioning(vm, instance: provisioning, tart: tart) }
         }

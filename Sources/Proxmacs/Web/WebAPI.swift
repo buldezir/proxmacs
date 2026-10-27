@@ -747,9 +747,14 @@ struct WebAPI: Sendable {
     private func registerVNC(_ router: Router<WebContext>) {
         // The guest macOS account that signs in to Screen Sharing. GET is the one endpoint
         // that hands a stored secret back out: noVNC answers the RFB handshake client-side,
-        // so auto-fill needs it. It goes only to the authenticated session that asked.
-        router.get("/api/vms/:name/vnc/credentials") { _, context in
+        // so auto-fill needs it. Browser sessions only: a script's API key has no use for a
+        // guest password. AuthMiddleware takes any Authorization header as an API key.
+        router.get("/api/vms/:name/vnc/credentials") { request, context in
             await API.guarded {
+                guard request.headers[.authorization] == nil else {
+                    throw APIError(message: "API keys can't read saved Screen Sharing credentials; sign in to the web UI",
+                                   status: .forbidden)
+                }
                 let name = try await Self.requireVM(state, context)
                 let credentials = VNCCredentials.load(name)
                 let user: Any = credentials?.username ?? NSNull()
@@ -774,6 +779,21 @@ struct WebAPI: Sendable {
                 let name = try await Self.requireVM(state, context)
                 try VNCCredentials.clear(name)
                 return API.noContent()
+            }
+        }
+        // Changes the guest's settings, so only on request: the Display tab offers it when
+        // Screen Sharing is off or turns down a sign-in.
+        router.post("/api/vms/:name/vnc/setup") { _, context in
+            await API.guarded {
+                let name = try await Self.requireVM(state, context)
+                guard ScreenSharingSetup.isMacOS(name) else {
+                    throw APIError(message: "Screen Sharing setup is for macOS guests. Start a VNC server on port 5900 in \(name).")
+                }
+                guard await state.isRunning(name) else {
+                    throw APIError(message: "\(name) is not running. Start it, then try again.")
+                }
+                let outcome = try await ScreenSharingSetup.shared.setUp(name)
+                return API.json(["changed": outcome.changed, "message": outcome.message])
             }
         }
         router.ws("/api/vms/:name/vnc/ws") { _, context in

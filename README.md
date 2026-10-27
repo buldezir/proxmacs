@@ -230,16 +230,18 @@ macOS service (Apple ARD auth) — the same one behind Finder's *Connect to Scre
 VNC server on port 5900 works too.
 
 Connecting asks for a **macOS account inside the guest** (user name and password). Those are typed into the browser
-and travel only to the guest, never to Proxmacs's config; "Remember on this Mac" keeps them in `secrets.json` (mode
-0600) so the next connect fills them in. *Forget saved credentials* on the disconnect overlay removes them.
+and travel only to the guest, never to Proxmacs's config. "Remember on this Mac" (off by default) keeps them in
+`secrets.json` (mode 0600) so the next connect fills them in; anyone who signs in to the web UI can then connect with
+them, but API keys can't read them back. *Forget saved credentials* on the disconnect overlay removes them.
 
-Proxmacs sets the guest up through the tart guest agent (`kickstart`, which needs passwordless `sudo` in the guest):
-it switches Screen Sharing on when nothing is listening, and grants every local user observe-and-control — Remote
-Management otherwise leaves accounts at level 0, where the guest rejects every sign-in whatever the password. A
-*specified users* policy of your own is left alone. Without the agent, turn Screen Sharing on in the guest under
-System Settings → General → Sharing → Screen Sharing. The first time it connects, macOS may also ask to let Proxmacs
-reach the local network; allow it in System Settings → Privacy & Security, or the Display tab reports that it cannot
-reach the guest.
+Proxmacs changes nothing in the guest on its own. When Screen Sharing is off, or a macOS guest turns down a sign-in,
+the Display tab offers **Set up Screen Sharing**, which runs `kickstart` through the tart guest agent (it needs
+passwordless `sudo` in the guest): it switches Screen Sharing on when nothing is listening, and otherwise grants every
+local user observe-and-control if nobody has any rights — Remote Management can leave accounts at level 0, where the
+guest rejects every sign-in whatever the password. A *specified users* policy of your own is left alone. Without the
+agent, turn Screen Sharing on in the guest under System Settings → General → Sharing → Screen Sharing. The first time
+it connects, macOS may also ask to let Proxmacs reach the local network; allow it in System Settings → Privacy &
+Security, or the Display tab reports that it cannot reach the guest.
 
 ## Layout
 

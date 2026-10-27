@@ -169,6 +169,8 @@ final class AppState {
             return item
         }
 
+        // A stopped VM's address is no longer its own: its next boot may get another one.
+        for item in vms where !item.isRunning { ips[item.name] = nil }
         for item in vms where item.isRunning {
             let ip = await resolveIP(item, tart: tart)
             ips[item.name] = ip
@@ -198,12 +200,16 @@ final class AppState {
         }
     }
 
+    func isRunning(_ vm: String) -> Bool { item(vm)?.isRunning == true }
+
     /// The guest IP for the web Display tab: the cached one, or a fresh mode-aware lookup.
     /// `refresh` fills the same cache on its 5-second round; asking here avoids the tab
-    /// re-resolving with a fixed resolver order and ignoring the network mode.
+    /// re-resolving with a fixed resolver order and ignoring the network mode. Nil unless
+    /// the VM runs: a stopped VM's last address may belong to another machine by now, and
+    /// the Display tab would send it the saved sign-in.
     func ip(_ vm: String) async -> String? {
+        guard let tart, let item = item(vm), item.isRunning else { return nil }
         if let cached = ips[vm] { return cached }
-        guard let tart, let item = item(vm) else { return nil }
         let ip = await resolveIP(item, tart: tart)
         ips[vm] = ip
         return ip

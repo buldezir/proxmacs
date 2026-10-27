@@ -583,6 +583,6 @@ input.narrow { width: 90px; }
 
 /* display (noVNC) */
 .display-box { position: relative; flex: 1; min-height: 420px; background: #000; border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; }
-.display-host { position: absolute; inset: 0; }
+.display-host { position: absolute; inset: 0; overflow: auto; background: #111; }
 .display-host canvas { display: block; }
-.display-host { overflow: auto; background: #111; }
+.display-hint { max-width: 420px; opacity: 0.75; }

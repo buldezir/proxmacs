@@ -3,47 +3,69 @@ import HummingbirdWebSocket
 import NIOCore
 import NIOPosix
 
-/// Turns Screen Sharing on inside a guest and makes sure an account can sign in, at most
-/// once per VM per process.
+/// Turns Screen Sharing on inside a macOS guest and lets its local accounts sign in. It
+/// changes the guest's settings, so it runs only when someone asks from the Display tab.
 ///
 /// Nothing secret goes on a command line: kickstart runs as argv through `tart exec`,
 /// never through a shell, and only needs the guest to allow passwordless sudo.
 actor ScreenSharingSetup {
     static let shared = ScreenSharingSetup()
 
-    private var done: Set<String> = []
-    private var inFlight: [String: Task<Void, any Error>] = [:]
-
-    /// Makes sure a guest account can sign in at all. Non-disruptive: no agent restart, so
-    /// a live session in another tab is untouched. A failure is remembered only for this
-    /// call, so the next connect tries again instead of being stuck for the process's life.
-    func ensure(_ vm: String) async throws {
-        try await once("access:\(vm)") { try await Self.grantAccessIfMissing(vm) }
+    struct Outcome: Sendable {
+        /// Whether anything in the guest changed, so that reconnecting is worth a try.
+        var changed: Bool
+        var message: String
     }
 
-    /// Turns Screen Sharing on. Restarts the agent — a live session would be dropped — so
-    /// call this only when nothing is listening on :5900.
-    func activate(_ vm: String) async throws {
-        try await once("activate:\(vm)") {
-            try await Self.run(vm, Self.activationCommand())
-            try await Self.run(vm, Self.accessCommand())
-            _ = try? await Self.run(vm, Self.legacyDisableCommand())
-        }
+    private var inFlight: [String: Task<Outcome, any Error>] = [:]
+
+    /// Turns Screen Sharing on when nothing is listening on :5900; otherwise grants local
+    /// accounts observe+control where nobody has any. Not remembered: the guest can be
+    /// switched off, restored or recreated, so every request looks at it afresh. Concurrent
+    /// requests for one VM share a run, so a double click restarts the agent at most once.
+    func setUp(_ vm: String) async throws -> Outcome {
+        if let running = inFlight[vm] { return try await running.value }
+        let task = Task { try await Self.setUpNow(vm) }
+        inFlight[vm] = task
+        defer { inFlight[vm] = nil }
+        return try await task.value
     }
 
-    /// Runs `body` at most once per `key`, coalescing concurrent callers onto one task.
-    /// `key` is recorded only on success.
-    private func once(_ key: String, _ body: @Sendable @escaping () async throws -> Void) async throws {
-        if done.contains(key) { return }
-        if let running = inFlight[key] {
-            try await running.value
-            return
+    private static func setUpNow(_ vm: String) async throws -> Outcome {
+        // Restarting the agent drops every session, including one another tab holds, so
+        // only when the guest itself says nothing is listening.
+        if await portIsClosed(vm) {
+            try await run(vm, activationCommand())
+            try await run(vm, accessCommand())
+            _ = try? await run(vm, legacyDisableCommand())
+            // The agent restart is not instantaneous. Give it a beat so the reconnect that
+            // follows gets through.
+            try await Task.sleep(for: .seconds(1))
+            return Outcome(changed: true, message: "Turned on Screen Sharing in \(vm).")
         }
-        let task = Task { try await body() }
-        inFlight[key] = task
-        defer { inFlight[key] = nil }
-        try await task.value
-        done.insert(key)
+        let policy = try await exec(vm, policyCommand())
+        guard policy.succeeded else {
+            // No Remote Management settings at all: Screen Sharing was turned on in System
+            // Settings, whose own list decides who may sign in.
+            if policy.stderr.contains("does not exist") {
+                return Outcome(changed: false, message: "Screen Sharing in \(vm) is on. Who may sign in is set in its System Settings → General → Sharing.")
+            }
+            throw failure(vm, policy)
+        }
+        guard needsAccessGrant(policy.stdout) else {
+            return Outcome(changed: false, message: "Screen Sharing in \(vm) is on and open to its local accounts. Check the user name and password.")
+        }
+        try await run(vm, accessCommand())
+        return Outcome(changed: true, message: "Let \(vm)'s local accounts sign in to Screen Sharing.")
+    }
+
+    /// Tart records the guest OS in the VM's config.json. Setup only applies to macOS, and
+    /// an unreadable config is most likely one too.
+    static func isMacOS(_ vm: String) -> Bool {
+        guard let data = try? Data(contentsOf: Paths.tartVMDir(vm).appending(path: "config.json")),
+              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return true }
+        return config["os"] as? String != "linux"
     }
 
     static let kickstart = "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
@@ -117,33 +139,22 @@ actor ScreenSharingSetup {
         return nil
     }
 
-    /// Grants sign-in rights only where they are missing. Never runs anything if the
-    /// guest is already configured, so a second connect costs nothing.
-    private static func grantAccessIfMissing(_ vm: String) async throws {
-        guard let tart = Tart.locate() else {
-            throw ProxmacsError("tart is not installed. Install it with `brew install openai/tools/tart`.")
-        }
-        let policy = try await tart.exec(vm, policyCommand(), timeout: 20)
-        guard policy.succeeded else {
-            throw ProxmacsError(excerpt(policy.stderr.isEmpty ? policy.stdout : policy.stderr))
-        }
-        guard needsAccessGrant(policy.stdout) else { return }
-        try await run(vm, accessCommand())
-    }
-
     private static func run(_ vm: String, _ command: [String]) async throws {
+        let result = try await exec(vm, command)
+        guard result.succeeded else { throw failure(vm, result) }
+    }
+
+    private static func exec(_ vm: String, _ command: [String]) async throws -> CommandResult {
         guard let tart = Tart.locate() else {
             throw ProxmacsError("tart is not installed. Install it with `brew install openai/tools/tart`.")
         }
-        let result = try await tart.exec(vm, command, timeout: 20)
-        guard result.succeeded else {
-            throw ProxmacsError(excerpt(result.stderr.isEmpty ? result.stdout : result.stderr))
-        }
+        return try await tart.exec(vm, command, timeout: 20)
     }
 
-    private static func excerpt(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "kickstart failed" : String(trimmed.prefix(200))
+    private static func failure(_ vm: String, _ result: CommandResult) -> ProxmacsError {
+        let output = (result.stderr.isEmpty ? result.stdout : result.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = output.isEmpty ? "" : " (\(output.prefix(200)))"
+        return ProxmacsError("Could not set up Screen Sharing in \(vm)\(detail). It needs the tart guest agent, and passwordless sudo in the guest.")
     }
 }
 
@@ -209,7 +220,7 @@ struct GuestLink: Sendable {
     /// Happy-eyeballs tries every address, so one connect can carry several errnos.
     /// An address that refused means nothing is listening even if another was
     /// unreachable — that is the failure the user can act on. Reporting privacy
-    /// instead would hide "Screen Sharing is off" and skip the auto-enable.
+    /// instead would hide "Screen Sharing is off" and the offer to turn it on.
     static func preferredErrno(_ codes: [CInt]) -> CInt? {
         codes.first(where: { $0 == ECONNREFUSED })
             ?? codes.first(where: { $0 == EHOSTUNREACH || $0 == ENETUNREACH })
@@ -275,11 +286,15 @@ private final class GuestReader: ChannelInboundHandler, Sendable {
 }
 
 /// A spawned `/usr/bin/nc`, kept so the bridge can write to its stdin and reap it on close.
+/// It owns both of its descriptors and closes them in `close()`: the app has about 256, and
+/// every Display reconnect through this fallback opens a new hop.
 final class NcHop: @unchecked Sendable {
     private let process: Process
     private let source: DispatchSourceRead
     private let writeFD: Int32
     private let received: AsyncStream<Data>
+    private let lock = NSLock()
+    private var closed = false
 
     init(host: String, port: Int) throws {
         let process = Process()
@@ -299,21 +314,30 @@ final class NcHop: @unchecked Sendable {
         let childEnd = FileHandle(fileDescriptor: pair[1], closeOnDealloc: true)
         process.standardInput = childEnd
 
-        let stdout = Pipe()
-        process.standardOutput = stdout
+        // A raw pipe rather than `Pipe`, whose reading end this hop could not close itself.
+        var out: [Int32] = [0, 0]
+        guard pipe(&out) == 0 else {
+            Darwin.close(pair[0])
+            throw GuestLinkError.unreachable("cannot open a channel from /usr/bin/nc (errno \(errno))")
+        }
+        let childOut = FileHandle(fileDescriptor: out[1], closeOnDealloc: true)
+        process.standardOutput = childOut
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
         } catch {
             Darwin.close(pair[0])
+            Darwin.close(out[0])
             throw GuestLinkError.unreachable("cannot run /usr/bin/nc: \(error.localizedDescription)")
         }
-        // The child has its own copy of the reading end. Ours has to go: while it stays
-        // open, a write after nc exits would loop back to us instead of failing with EPIPE.
+        // The child has its own copies of these ends. Ours have to go: while the reading end
+        // stays open, a write after nc exits would loop back to us instead of failing with
+        // EPIPE, and while the writing end does, its output would never reach EOF.
         try? childEnd.close()
+        try? childOut.close()
 
         let writeFD = pair[0]
-        let readFD = stdout.fileHandleForReading.fileDescriptor
+        let readFD = out[0]
         // Nonblocking: a write must not park a cooperative thread, and EPIPE has to come
         // back as an errno — FileHandle.write raises an ObjC exception nothing catches.
         for fd in [writeFD, readFD] {
@@ -334,6 +358,11 @@ final class NcHop: @unchecked Sendable {
                     break
                 }
             }
+        }
+        // Dispatch runs this after the last event handler, so the read cannot race the close.
+        source.setCancelHandler {
+            Darwin.close(readFD)
+            continuation.finish()
         }
         source.resume()
 
@@ -378,10 +407,20 @@ final class NcHop: @unchecked Sendable {
         }
     }
 
+    /// Safe to call more than once. The bridge calls it only after its last `send` has
+    /// returned, since the descriptor `send` writes to is closed here.
     func close() {
-        source.cancel()
+        let first = lock.withLock {
+            defer { closed = true }
+            return !closed
+        }
+        guard first else { return }
         if process.isRunning { process.terminate() }
+        source.cancel()
+        Darwin.close(writeFD)
     }
+
+    deinit { close() }
 }
 
 /// Bridges a guest's Screen Sharing (RFB on :5900) to a WebSocket for noVNC.
@@ -393,9 +432,17 @@ enum VNCBridge {
     /// truncated by the browser — they are dropped entirely, and the user gets no message.
     static let maxCloseReasonBytes = 123
 
+    /// Close code for "Screen Sharing is off in this macOS guest", so the Display tab can
+    /// offer to turn it on. RFC 6455 leaves 4000–4999 to applications.
+    static let screenSharingOff = 4001
+
     static func run(state: AppState, vm: String, inbound: WebSocketInboundStream, outbound: WebSocketOutboundWriter) async throws {
         guard VMMeta.load(vm) != nil else {
             try await close(outbound, "VM \(vm) does not exist")
+            return
+        }
+        guard await state.isRunning(vm) else {
+            try await close(outbound, "\(vm) is not running. Start it, then reconnect.")
             return
         }
         guard let ip = await state.ip(vm) else {
@@ -403,46 +450,12 @@ enum VNCBridge {
             return
         }
 
-        // Sign-in rights first: Screen Sharing can be listening and still reject every
-        // account because nothing was ever granted Remote Management access. Non-
-        // disruptive, so it runs whether or not the port is open. Failure is not fatal —
-        // the guest may already be set up, and the connect below is what reports trouble.
-        try? await ScreenSharingSetup.shared.ensure(vm)
-
         let link: GuestLink
         do {
             link = try await GuestLink.connect(host: ip)
         } catch {
-            // A connect that failed means we hold no session, so restarting ARD cannot
-            // drop one of ours — but it can drop one another tab holds, which is exactly
-            // what a listening port may mean. So turn Screen Sharing on only when nothing
-            // is accepting connections, and ask the guest rather than trusting the errno:
-            // privacy reports a closed port as unreachable from here.
-            var off = false
-            if case GuestLinkError.refused = error {
-                off = true
-            } else if await ScreenSharingSetup.portIsClosed(vm) {
-                off = true
-            }
-            guard off else {
-                try await close(outbound, Self.closeReason(vm, ip: ip, error: error, setup: ""))
-                return
-            }
-            var setup = ""
-            do {
-                try await ScreenSharingSetup.shared.activate(vm)
-                // The agent restart is not instantaneous. Give it a beat so the first
-                // click connects instead of asking for a second one.
-                try await Task.sleep(for: .seconds(1))
-            } catch {
-                setup = " Auto-setup needs the tart guest agent and passwordless sudo."
-            }
-            do {
-                link = try await GuestLink.connect(host: ip)
-            } catch {
-                try await close(outbound, Self.closeReason(vm, ip: ip, error: error, setup: setup))
-                return
-            }
+            try await closeAfterFailure(outbound, vm: vm, ip: ip, error: error)
+            return
         }
         defer { link.close() }
 
@@ -466,9 +479,29 @@ enum VNCBridge {
         }
     }
 
+    /// Says why the connect failed. Whether the port is closed is asked of the guest when
+    /// the errno can't tell: Local Network privacy makes a closed port look unreachable.
+    private static func closeAfterFailure(_ outbound: WebSocketOutboundWriter, vm: String, ip: String, error: any Error) async throws {
+        let off: Bool
+        if case GuestLinkError.refused = error {
+            off = true
+        } else {
+            off = await ScreenSharingSetup.portIsClosed(vm)
+        }
+        if off, ScreenSharingSetup.isMacOS(vm) {
+            try await close(outbound, "Screen Sharing is off in \(vm).", code: screenSharingOff)
+        } else if off {
+            try await close(outbound, "Nothing is listening on \(ip):5900. Start a VNC server in \(vm), then reconnect.")
+        } else if case GuestLinkError.localNetwork = error {
+            try await close(outbound, "Local Network blocked \(ip):5900. Allow Proxmacs in System Settings → Privacy & Security, then reconnect.")
+        } else {
+            try await close(outbound, "Cannot reach \(vm) at \(ip):5900. Wait for it to finish booting, then reconnect.")
+        }
+    }
+
     /// Closes the WebSocket with an actionable reason, never longer than the protocol allows.
-    private static func close(_ outbound: WebSocketOutboundWriter, _ reason: String) async throws {
-        try await outbound.close(.unexpectedServerError, reason: cap(reason))
+    private static func close(_ outbound: WebSocketOutboundWriter, _ reason: String, code: Int? = nil) async throws {
+        try await outbound.close(code.map { .init(codeNumber: $0) } ?? .unexpectedServerError, reason: cap(reason))
     }
 
     /// Shortens on a character boundary so a multi-byte character is never split.
@@ -481,13 +514,5 @@ enum VNCBridge {
             out += next
         }
         return out
-    }
-
-    private static func closeReason(_ vm: String, ip: String, error: any Error, setup: String) -> String {
-        if case GuestLinkError.localNetwork = error {
-            return "Local Network blocked \(ip):5900. Allow Proxmacs in System Settings → Privacy & Security, then reconnect."
-        }
-        // Guidance first: if the auto-setup note overflows the cap, that is what gets cut.
-        return "Cannot reach Screen Sharing in \(vm) at \(ip):5900. Enable it in System Settings → General → Sharing.\(setup)"
     }
 }
