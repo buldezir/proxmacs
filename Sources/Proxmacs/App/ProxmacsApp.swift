@@ -15,7 +15,7 @@ struct ProxmacsApp: App {
             MenuContent()
                 .environment(state)
         } label: {
-            Image(systemName: state.vms.contains(where: \.isRunning) ? "server.rack" : "rectangle.stack")
+            Image(systemName: state.vms.contains(where: \.isRunning) ? "server.rack" : "xserve")
         }
         .menuBarExtraStyle(.window)
 
