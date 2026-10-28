@@ -21,6 +21,7 @@ install_name_tool -add_rpath @executable_path/../Frameworks "$APP/Contents/MacOS
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp -R web/dist "$APP/Contents/Resources/WebAssets"
+cp docs/API.md "$APP/Contents/Resources/API.md"   # served in /llms.txt
 if [ -n "${VERSION:-}" ]; then plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"; fi
 if [ -n "${BUILD:-}" ]; then plutil -replace CFBundleVersion -string "$BUILD" "$APP/Contents/Info.plist"; fi
 if [ -n "${BUNDLE_ID:-}" ]; then plutil -replace CFBundleIdentifier -string "$BUNDLE_ID" "$APP/Contents/Info.plist"; fi

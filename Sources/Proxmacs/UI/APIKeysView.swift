@@ -11,6 +11,7 @@ struct APIKeysView: View {
     @State private var error: String?
 
     private var store: APIKeyStore { .shared }
+    private var baseURL: String { WebServer.shared.url ?? "https://<this Mac>:8006" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -59,7 +60,7 @@ struct APIKeysView: View {
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
-            Text("Usage: `curl -H \"Authorization: Bearer pmx_…\" \(WebServer.shared.url ?? "https://<this Mac>:8006")/api/vms`. The API is described in docs/API.md in the Proxmacs repository.")
+            Text("Usage: `curl -H \"Authorization: Bearer pmx_…\" \(baseURL)/api/vms`. The API is described in docs/API.md in the Proxmacs repository; AI agents can read it at \(baseURL)/llms.txt.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)

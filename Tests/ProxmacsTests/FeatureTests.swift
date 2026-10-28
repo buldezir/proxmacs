@@ -232,4 +232,12 @@ final class APIKeyTests: XCTestCase {
         XCTAssertNil(store.lastUsed()[key.id])
         XCTAssertThrowsError(try store.remove("backup-script"))
     }
+
+    func testLLMsTxtCarriesTheAPIReference() {
+        let text = LLMsTxt.text
+        XCTAssertTrue(text.hasPrefix("# Proxmacs\n\n> "), "llms.txt starts with a title and a summary")
+        XCTAssertTrue(text.contains("\n## API reference\n"))
+        XCTAssertTrue(text.contains("`POST /api/vms/:name/start`"), "docs/API.md follows")
+        XCTAssertFalse(text.contains("# Proxmacs web API"), "under one title")
+    }
 }

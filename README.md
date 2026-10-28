@@ -47,7 +47,8 @@ A Proxmox-flavoured menubar VM manager for Apple Silicon Macs, built on [Tart](h
   actions and editing, host memory usage (Activity Monitor's breakdown, pressure, swap, memory assigned to running
   VMs, live chart), task log, backups/offsite management, a browser serial console (xterm.js over WebSocket) and a
   Display tab that shows the guest's screen.
-  Scripts use the same JSON API with API keys: see [docs/API.md](docs/API.md).
+  Scripts use the same JSON API with API keys: see [docs/API.md](docs/API.md). AI agents can read how to use it
+  from the server itself, at `/llms.txt`.
   The menubar shows a memory gauge too. Works on phones and wide screens, and installs to the home screen as an app.
 - **VMs outlive the app**: each VM runs under its own LaunchAgent (`dev.proxmacs.vm.<name>`) as
   `Proxmacs cli run-vm <name>`, which supervises `tart run` and owns the serial console

@@ -4,6 +4,9 @@ The web UI is a client of a JSON API on the same server, and scripts can use tha
 take backups, read metrics and so on. The server is at `https://<mac>:8006` by default (`web.json` sets the port,
 bind address and TLS; see the README).
 
+For AI agents, the server serves this reference at `/llms.txt` (no login needed), after advice on using the API
+safely: point an agent at `https://<mac>:8006/llms.txt` and give it an API key.
+
 ## Authentication
 
 Programs authenticate with an **API key** sent in the `Authorization` header:
@@ -66,12 +69,18 @@ api() { curl -sS --cacert ~/Library/Application\ Support/Proxmacs/web/cert.pem \
 # Running VMs and their IPs
 api $PMX/api/vms | jq -r '.[] | select(.state == "running") | "\(.name)\t\(.ip)"'
 
+# Wait for a task: prints its status and message, and fails unless it ended ok
+wait_task() {
+  local t
+  until t=$(api $PMX/api/tasks | jq -c --arg id "$1" '.[] | select(.id == $id and .status != "running")') && [ -n "$t" ]; do
+    sleep 2
+  done
+  jq -r '"\(.status): \(.message // "")"' <<<"$t"
+  [ "$(jq -r .status <<<"$t")" = ok ]
+}
+
 # Back up web01 and wait for the result
-task=$(api -X POST $PMX/api/vms/web01/backup | jq -r .task)
-until s=$(api $PMX/api/tasks | jq -r --arg t "$task" '.[] | select(.id == $t) | .status') && [ -n "$s" ] && [ "$s" != running ]; do
-  sleep 2
-done
-api $PMX/api/tasks | jq -r --arg t "$task" '.[] | select(.id == $t) | "\(.status): \(.message)"'
+wait_task "$(api -X POST $PMX/api/vms/web01/backup | jq -r .task)"
 
 # Back up straight to an offsite target (id or name)
 api -X POST -d '{"target": "nas"}' $PMX/api/vms/web01/backup
@@ -85,6 +94,12 @@ api -X POST $PMX/api/vms -d '{
 
 # Clone a template and start the clone
 api -X POST -d '{"name": "web02", "start": true}' $PMX/api/vms/debian-13-base/clone
+
+# Create a VM you can log in to (with the Mac user's SSH keys and yours), wait for its address and SSH in
+keys=$(api $PMX/api/host/sshkeys | jq --arg mine "$(cat ~/.ssh/id_ed25519.pub)" '. + [$mine]')
+wait_task "$(api -X POST $PMX/api/vms -d "$(jq -n --argjson keys "$keys" '{name: "build01", sshKeys: $keys}')" | jq -r .task)" &&
+  until ip=$(api $PMX/api/vms | jq -r '.[] | select(.name == "build01") | .ip // empty') && [ -n "$ip" ]; do sleep 5; done &&
+  ssh debian@"$ip"
 ```
 
 ## Reference
