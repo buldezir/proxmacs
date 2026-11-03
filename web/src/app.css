@@ -311,13 +311,15 @@ fieldset { border: none; padding: 0; margin: 0; min-width: 0; }
 .error-text { color: var(--err); }
 .note { padding: 10px 12px; background: var(--info-bg); border-radius: var(--radius); margin-bottom: 12px; }
 
-.kv { display: grid; grid-template-columns: minmax(110px, 150px) minmax(0, 1fr); gap: 8px 16px; align-items: baseline; margin: 0; }
+/* The label column is only as wide as its longest label, leaving the rest to the values. */
+.kv { display: grid; grid-template-columns: fit-content(150px) minmax(0, 1fr); gap: 8px 16px; align-items: baseline; margin: 0; }
 .kv > dt { color: var(--muted); }
 .kv > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .web-urls { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .copy-line { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .copy-line code { overflow-wrap: anywhere; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
-.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 0 16px; }
+/* Wide enough for an IPv6 address or an ssh command on one line. */
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 0 16px; }
 
 /* tables */
 .table { width: 100%; border-collapse: collapse; }
@@ -438,7 +440,7 @@ fieldset { border: none; padding: 0; margin: 0; min-width: 0; }
   .panel-body { padding: 12px; }
   .panel-header { padding: 8px 12px; }
   .form-grid { grid-template-columns: minmax(0, 1fr); }
-  .kv { grid-template-columns: minmax(0, 110px) minmax(0, 1fr); gap: 8px 12px; }
+  .kv { grid-template-columns: fit-content(110px) minmax(0, 1fr); gap: 8px 12px; }
   .table th, .table td { padding-left: 8px; padding-right: 8px; }
   .task-msg { display: none; }
   .tasks-body { height: 40vh; }
