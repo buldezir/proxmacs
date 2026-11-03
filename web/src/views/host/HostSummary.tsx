@@ -36,6 +36,8 @@ export function HostSummary({ navigate }: { navigate: Navigate }) {
                 </li>
               ))}
             </ul>],
+            ['API', <span><a className="mono" href="/llms.txt" target="_blank" rel="noreferrer">/llms.txt</a>{' '}
+              <span className="muted small">how scripts and AI agents use it</span></span>],
             ...(storage ? (['vms', 'backups'] as const).map((kind) => {
               const loc = storage[kind];
               const v = loc.volume;
