@@ -122,6 +122,8 @@ final class AppState {
 
     private var ips: [String: String] = [:]
     private var guestCache: [String: (info: GuestInfo, time: Date)] = [:]
+    /// VM name → modification date of its runner's task file when it was last merged.
+    private var runnerTasksMerged: [String: Date] = [:]
 
     init(autoRefresh: Bool = true) {
         Paths.ensure()
@@ -169,8 +171,11 @@ final class AppState {
             return item
         }
 
+        for item in vms { mergeRunnerTasks(item.name) }
+
         // A stopped VM's address is no longer its own: its next boot may get another one.
         for item in vms where !item.isRunning { ips[item.name] = nil }
+        if online { await GuestShell.shared.keep(Set(vms.filter(\.isRunning).map(\.name))) }
         for item in vms where item.isRunning {
             let ip = await resolveIP(item, tart: tart)
             ips[item.name] = ip
@@ -191,9 +196,10 @@ final class AppState {
     }
 
     private func resolveIP(_ item: VMItem, tart: Tart) async -> String? {
-        // The guest agent knows the truth in every mode; until it's installed (first boot), fall back
-        // to DHCP leases (NAT) or the host ARP table (bridged).
-        if let ip = await tart.ip(item.name, resolver: .agent) { return ip }
+        // The guest knows the truth in every mode; until its agent is installed (first boot), fall back
+        // to DHCP leases (NAT) or the host ARP table (bridged). Not `tart ip --resolver agent`, which
+        // leaks a connection to the guest each time (see GuestShell).
+        if let ip = await GuestInfo.address(item.name, tart: tart) { return ip }
         switch item.meta.network {
         case .nat: return await tart.ip(item.name, resolver: .dhcp)
         case .bridged: return await tart.ip(item.name, resolver: .arp)
@@ -264,6 +270,22 @@ final class AppState {
         if let vm { activity[vm] = nil }
         await refresh()
         return succeeded
+    }
+
+    /// Adds the tasks a VM's runner recorded (a restart after a crash) to the task log, or updates them.
+    private func mergeRunnerTasks(_ vm: String) {
+        let modified = (try? RunnerTasks.url(vm).resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        guard let modified, modified != runnerTasksMerged[vm] else { return }
+        runnerTasksMerged[vm] = modified
+        for record in RunnerTasks.load(vm) {
+            if let index = tasks.firstIndex(where: { $0.id == record.id }) {
+                if tasks[index] != record { tasks[index] = record }
+            } else {
+                // Newest first; a record from before the app started goes where it belongs.
+                tasks.insert(record, at: tasks.firstIndex { $0.started < record.started } ?? tasks.endIndex)
+                if tasks.count > 200 { tasks.removeLast(tasks.count - 200) }
+            }
+        }
     }
 
     private func updateTask(_ id: String, progress: Double?, message: String?) {

@@ -35,11 +35,17 @@ struct GuestInfo: Sendable {
         """
 
     static func fetch(_ vm: String, tart: Tart) async throws -> GuestInfo {
-        let result = try await tart.exec(vm, ["sh", "-c", script], timeout: 10)
-        guard result.succeeded else {
-            throw ProxmacsError("The guest agent did not answer\(result.stderr.isEmpty ? "" : ": \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")")
-        }
+        let result = try await GuestShell.shared.run(vm, script, timeout: 10, tart: tart)
+        guard result.succeeded else { throw ProxmacsError("The guest's report failed (status \(result.status))") }
         return parse(result.stdout)
+    }
+
+    /// The guest's first global IPv4 address, as `tart ip --resolver agent` reports it, or nil when
+    /// the agent can't be reached (yet: it's installed on first boot).
+    static func address(_ vm: String, tart: Tart) async -> String? {
+        let script = #"ip -4 -o addr show scope global | awk '{ split($4, a, "/"); print a[1] }'"#
+        guard let result = try? await GuestShell.shared.run(vm, script, timeout: 10, tart: tart), result.succeeded else { return nil }
+        return result.stdout.split(separator: "\n").first.map { $0.trimmingCharacters(in: .whitespaces) }.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     static func parse(_ text: String) -> GuestInfo {

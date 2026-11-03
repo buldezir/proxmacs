@@ -53,7 +53,8 @@ A Proxmox-flavoured menubar VM manager for Apple Silicon Macs, built on [Tart](h
 - **VMs outlive the app**: each VM runs under its own LaunchAgent (`dev.proxmacs.vm.<name>`) as
   `Proxmacs cli run-vm <name>`, which supervises `tart run` and owns the serial console
   (socket `/tmp/proxmacs-<uid>/<name>.sock`, scrollback in `vms/<name>/console.log`).
-  Optionally, a VM starts on login.
+  Optionally, a VM starts on login. Such a VM also starts again if it crashes after running for at least a minute,
+  up to 3 times an hour. The task log records each crash and whether the VM was restarted.
 
 ## Screenshots
 
@@ -81,8 +82,11 @@ Regenerate them with `scripts/docs-screenshots.swift` (see the comment at its to
     limited to NAT.
 - **It already does the VM plumbing.**
   - Tart handles the VM bundle (config, disk, NVRAM, MAC), EFI boot of Linux guests and the serial console.
-  - Its guest agent supplies VM IPs (`tart ip --resolver agent`, which also works on bridged VMs) and runs commands
-    in the guest (`tart exec`). Backups use `tart exec` to freeze the filesystem.
+  - Its guest agent runs commands in the guest (`tart exec`), which works on bridged VMs too. Proxmacs reads each
+    VM's address, usage and details through one long-lived `tart exec -i <vm> sh`, since Tart 2.41.1 and earlier
+    leak a connection per `tart exec` or `tart ip --resolver agent` call, and the VM crashes after 256 of them
+    ([openai/tart#1410](https://github.com/openai/tart/issues/1410)). Backups use `tart exec` to freeze the
+    filesystem.
 - **Proxmacs stays simple.**
   - It shells out to the `tart` binary and doesn't link Virtualization.framework.
   - It needs no entitlements or sandbox, and works as an ad-hoc-signed build from source.

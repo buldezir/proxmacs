@@ -33,12 +33,6 @@ enum VMRunner {
             print("proxmacs: start order: waiting \(delay) s")
             Thread.sleep(forTimeInterval: TimeInterval(delay))
         }
-        if meta.seedPending {
-            // This boot picks up the rebuilt seed.
-            meta.seedPending = false
-            try? meta.save()
-        }
-        let provisioning = prepareProvisioning(vm, meta: &meta)
 
         // 1. Our own pty; raw mode on the VM side so nothing is echoed or translated.
         var master: Int32 = -1, slave: Int32 = -1
@@ -54,31 +48,97 @@ enum VMRunner {
         let hub = ConsoleHub(master: master, log: consoleLog(vm))
         try hub.listen(on: socketPath(vm))
 
-        // 3. tart run, with the serial port on our pty.
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: tart.path)
-        process.arguments = LaunchAgent.tartRunArguments(meta: meta, serialPath: slavePath)
-        process.environment = Tart.environment
-        try process.run()
-        print("proxmacs: started tart (pid \(process.processIdentifier)), console on \(slavePath)")
-        if let provisioning {
-            Task.detached { await confirmProvisioning(vm, instance: provisioning, tart: tart) }
-        }
-
         // Forward launchd's SIGTERM (bootout) / SIGINT to tart so the guest shuts down cleanly.
+        let stop = StopRequest()
         for sig in [SIGTERM, SIGINT] {
             signal(sig, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
-            source.setEventHandler { kill(process.processIdentifier, sig) }
+            source.setEventHandler { stop.request(sig) }
             source.resume()
             hub.retain(source)
         }
 
-        process.waitUntilExit()
+        // 3. tart run, with the serial port on our pty; again if the VM crashes and starts on login.
+        var restarts: [Date] = []
+        var restarting: TaskRecord?
+        var status: Int32 = 0
+        while true {
+            if meta.seedPending {
+                // This boot picks up the rebuilt seed.
+                meta.seedPending = false
+                try? meta.save()
+            }
+            let provisioning = prepareProvisioning(vm, meta: &meta)
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: tart.path)
+            process.arguments = LaunchAgent.tartRunArguments(meta: meta, serialPath: slavePath)
+            process.environment = Tart.environment
+            let output = TartOutput(process)
+            do {
+                try process.run()
+            } catch {
+                if var task = restarting {
+                    task.finish(.error, "Could not start \(vm) again: \(error.localizedDescription)")
+                    RunnerTasks.save(vm, task)
+                }
+                throw error
+            }
+            let started = Date()
+            stop.track(process)
+            print("proxmacs: started tart (pid \(process.processIdentifier)), console on \(slavePath)")
+            if var task = restarting {
+                task.finish(.ok, task.message)
+                RunnerTasks.save(vm, task)
+                restarting = nil
+            }
+            if let provisioning {
+                Task.detached { await confirmProvisioning(vm, instance: provisioning, tart: tart) }
+            }
+
+            process.waitUntilExit()
+            output.wait()
+            stop.track(nil)
+            status = process.terminationStatus
+            print("proxmacs: tart exited with status \(status)")
+            guard !stop.requested, let failure = output.failure() else { break }
+
+            meta = VMMeta.load(vm) ?? meta
+            restarts = restarts.filter { $0 > Date().addingTimeInterval(-3600) }
+            var task = TaskRecord(id: UUID().uuidString.lowercased(), vm: vm, title: "Restart after crash")
+            let crashed = "\(vm) crashed: \(failure.hasSuffix(".") ? String(failure.dropLast()) : failure)"
+            let refusal: String? = if !meta.autostart {
+                "Not restarted, since Start on login is off."
+            } else if Date().timeIntervalSince(started) < 60 {
+                "Not restarted, since it stopped within a minute of starting."
+            } else if restarts.count >= 3 {
+                "Not restarted, since it was restarted \(restarts.count) times in the last hour."
+            } else {
+                nil
+            }
+            if let refusal {
+                task.title = "Crash"
+                task.finish(.error, "\(crashed). \(refusal)")
+                RunnerTasks.save(vm, task)
+                print("proxmacs: \(crashed). \(refusal)")
+                break
+            }
+            task.message = "\(crashed). Restarted it."
+            RunnerTasks.save(vm, task)
+            print("proxmacs: \(crashed). Restarting it in 5 s")
+            // Give Virtualization.framework time to clean up after the crashed VM; a stop still wins.
+            for _ in 0..<20 where !stop.requested { Thread.sleep(forTimeInterval: 0.25) }
+            if stop.requested {
+                task.finish(.error, "\(crashed). Not restarted, since it was stopped.")
+                RunnerTasks.save(vm, task)
+                break
+            }
+            restarts.append(Date())
+            restarting = task
+        }
         unlink(socketPath(vm).path)
-        print("proxmacs: tart exited with status \(process.terminationStatus)")
         _ = slave  // keep the slave open for the VM's whole lifetime
-        exit(process.terminationStatus)
+        exit(status)
     }
 
     /// Rebuilds the seed if the last boot from it didn't finish provisioning, and records this boot.
@@ -118,8 +178,9 @@ enum VMRunner {
         let deadline = Date().addingTimeInterval(30 * 60)
         while Date() < deadline {
             try? await Task.sleep(for: .seconds(10))
-            guard let result = try? await tart.exec(vm, ["cat", CloudInitSeed.provisionedMarker], timeout: 10), result.succeeded,
-                  result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == instance else { continue }
+            guard let result = try? await GuestShell.shared.run(vm, "cat \(CloudInitSeed.provisionedMarker)", timeout: 10, tart: tart),
+                  result.succeeded, result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == instance else { continue }
+            await GuestShell.shared.keep([])
             // The seed may have been rebuilt meanwhile (settings edited while running): that's a new instance.
             guard var state = ProvisionState.load(vm), state.instance == instance else { return }
             state.done = true
@@ -131,6 +192,7 @@ enum VMRunner {
             print("proxmacs: provisioning finished")
             return
         }
+        await GuestShell.shared.keep([])
     }
 
     /// Runs async work from this synchronous process (nothing in it needs the main actor).
@@ -165,6 +227,77 @@ enum VMRunner {
             guard Date() < deadline else { throw Storage.unavailableError(.vms) }
             Thread.sleep(forTimeInterval: 2)
         }
+    }
+}
+
+/// Whether launchd asked the runner to stop (bootout), and the `tart run` to pass that on to.
+private final class StopRequest: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var stopping = false
+
+    var requested: Bool { lock.withLock { stopping } }
+
+    func track(_ process: Process?) { lock.withLock { self.process = process } }
+
+    func request(_ sig: Int32) {
+        let pid = lock.withLock {
+            stopping = true
+            return process?.processIdentifier
+        }
+        if let pid { kill(pid, sig) }
+    }
+}
+
+/// Passes `tart run`'s output on to the run log, keeping its end, which says why the VM stopped.
+private final class TartOutput: @unchecked Sendable {
+    private let process: Process
+    private let lock = NSLock()
+    private var tail = Data()
+    private let done = DispatchGroup()
+
+    init(_ process: Process) {
+        self.process = process
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        done.enter()
+        Thread.detachNewThread { [self] in
+            let reader = pipe.fileHandleForReading
+            while case let data = reader.availableData, !data.isEmpty {
+                FileHandle.standardOutput.write(data)
+                lock.withLock { tail = (tail + data).suffix(8192) }
+            }
+            done.leave()
+        }
+    }
+
+    /// Waits until tart's output has been read to its end.
+    func wait() { done.wait() }
+
+    /// Why the VM stopped, or nil if it was shut down or stopped (see `VMRunner.crashReason`).
+    func failure() -> String? {
+        VMRunner.crashReason(output: String(decoding: lock.withLock { tail }, as: UTF8.self),
+                             status: process.terminationStatus, signaled: process.terminationReason == .uncaughtSignal)
+    }
+}
+
+extension VMRunner {
+    /// Why `tart run` ended, from the end of its output, or nil if the guest shut down or was stopped
+    /// (`tart stop`, a bootout). Tart reports both with status 0, and a crashed VM too, but with an error.
+    static func crashReason(output: String, status: Int32, signaled: Bool) -> String? {
+        let lines = output.split(separator: "\n")
+        for marker in ["stopped the virtual machine due to error: ", "has been disconnected with error: "] {
+            if let line = lines.last(where: { $0.contains(marker) }) {
+                let error = line[line.range(of: marker)!.upperBound...]
+                // `Error Domain=VZErrorDomain Code=1 "The virtual machine stopped unexpectedly." UserInfo={…}`
+                if let quoted = error.firstMatch(of: /"([^"]+)"/) { return String(quoted.1) }
+                return String(error)
+            }
+        }
+        if signaled { return "tart was killed by signal \(status)" }
+        if status != 0 { return lines.last.map(String.init) ?? "tart exited with status \(status)" }
+        return nil
     }
 }
 

@@ -241,7 +241,8 @@ final class VMMetrics {
     }
 
     nonisolated private static func guestCounters(_ vm: String, tart: Tart) async -> GuestCounters? {
-        guard let result = try? await tart.exec(vm, ["cat", "/proc/net/dev", "/proc/meminfo"], timeout: 5), result.succeeded else {
+        guard let result = try? await GuestShell.shared.run(vm, "cat /proc/net/dev /proc/meminfo", timeout: 5, tart: tart),
+              result.succeeded else {
             return nil
         }
         return parseGuest(result.stdout)
