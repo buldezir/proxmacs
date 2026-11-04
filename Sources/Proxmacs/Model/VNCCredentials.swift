@@ -20,6 +20,11 @@ enum VNCCredentials {
         return Credentials(username: username, password: password)
     }
 
+    /// Just the account name, for the ssh hint; the password stays in the file.
+    static func username(_ vm: String) -> String? {
+        Secrets.get(userKey(vm)).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
     static func save(_ vm: String, username: String, password: String) throws {
         try Secrets.set(userKey(vm), username)
         try Secrets.set(passKey(vm), password)

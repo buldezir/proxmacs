@@ -252,6 +252,7 @@ struct WebAPI: Sendable {
                         "gateway": config.network.gateway as Any? ?? NSNull(), "dns": config.network.dns],
         ]
         return [
+            "os": item.os?.rawValue as Any? ?? NSNull(), "sshUser": item.sshUser as Any? ?? NSNull(),
             "cloudInit": cloudInit, "seedPending": item.meta.seedPending, "image": item.meta.image as Any? ?? NSNull(),
             "hasSeed": FileManager.default.fileExists(atPath: Paths.seedISO(item.name).path),
             "name": item.name, "state": item.state, "ip": item.ip as Any? ?? NSNull(), "network": network,

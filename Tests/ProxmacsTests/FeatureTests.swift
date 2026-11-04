@@ -161,13 +161,71 @@ final class CloneSeedTests: XCTestCase {
         meta.disks = [ExtraDisk(file: "disk1.img")]
         meta.shares = [SharedFolder(name: "docs", path: "/Users/me/My Docs", readOnly: true)]
         meta.nested = true
-        let args = LaunchAgent.tartRunArguments(meta: meta, serialPath: "/dev/ttys001")
+        let args = LaunchAgent.tartRunArguments(meta: meta, os: .linux, serialPath: "/dev/ttys001")
         XCTAssertTrue(args.contains { $0.hasSuffix("/vms/x/disk1.img") })
         XCTAssertTrue(args.contains("docs:/Users/me/My Docs:ro"))
         XCTAssertTrue(args.contains("--nested"))
         XCTAssertTrue(ExtraDisk.isValidFile("disk12.img"))
         XCTAssertFalse(ExtraDisk.isValidFile("disk.img"))
         XCTAssertFalse(ExtraDisk.isValidFile("../disk1.img"))
+    }
+
+    func testMacOSGuestsBootWithoutTheSeed() throws {
+        let name = "proxmacs-test-\(UUID().uuidString.prefix(8).lowercased())"
+        try FileManager.default.createDirectory(at: Paths.vmDir(name), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: Paths.vmDir(name)) }
+        try Data().write(to: Paths.seedISO(name))
+
+        let meta = VMMeta(name: name, network: .nat, autostart: false)
+        let seed = "\(Paths.seedISO(name).path):ro"
+        XCTAssertTrue(LaunchAgent.tartRunArguments(meta: meta, os: .linux, serialPath: "/dev/ttys001").contains(seed))
+        XCTAssertTrue(LaunchAgent.tartRunArguments(meta: meta, os: nil, serialPath: "/dev/ttys001").contains(seed))
+        XCTAssertFalse(LaunchAgent.tartRunArguments(meta: meta, os: .darwin, serialPath: "/dev/ttys001").contains(seed),
+                       "a seed left by an older clone isn't attached to a macOS guest")
+    }
+}
+
+final class GuestOSTests: XCTestCase {
+    private var dir: URL!
+
+    override func setUpWithError() throws {
+        dir = FileManager.default.temporaryDirectory.appending(path: "pmx-os-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    private func config(_ json: String) throws -> URL {
+        let file = dir.appending(path: "\(UUID().uuidString).json")
+        try Data(json.utf8).write(to: file)
+        return file
+    }
+
+    func testReadsTheOSTartRecorded() throws {
+        XCTAssertEqual(GuestOS.read(try config(#"{"version": 1, "os": "darwin", "cpuCount": 4}"#)), .darwin)
+        XCTAssertEqual(GuestOS.read(try config(#"{"version": 1, "os": "linux"}"#)), .linux)
+        XCTAssertNil(GuestOS.read(try config(#"{"version": 1}"#)))
+        XCTAssertNil(GuestOS.read(try config(#"{"os": "windows"}"#)))
+        XCTAssertNil(GuestOS.read(dir.appending(path: "missing.json")))
+    }
+
+    func testSSHUserOfAMacOSGuestIsItsScreenSharingAccount() {
+        var meta = VMMeta(name: "mac", network: .nat, autostart: false)
+        var item = VMItem(meta: meta, state: "running", ip: "192.168.64.5")
+        item.os = .darwin
+        XCTAssertNil(item.sshUser, "not the cloud-init default")
+        item.screenSharingUser = "admin"
+        XCTAssertEqual(item.sshUser, "admin")
+
+        meta.cloudInit = CloudInitConfig(user: "ubuntu")
+        item = VMItem(meta: meta, state: "running", ip: "192.168.64.6")
+        item.os = .linux
+        item.screenSharingUser = "admin"
+        XCTAssertEqual(item.sshUser, "ubuntu")
+        item.os = nil
+        XCTAssertEqual(item.sshUser, "ubuntu", "storage offline: still a Linux guest as far as anyone knows")
     }
 }
 

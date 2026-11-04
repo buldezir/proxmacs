@@ -18,10 +18,11 @@ A Proxmox-flavoured menubar VM manager for Apple Silicon Macs, built on [Tart](h
   instance-id and cloud-init re-applies them on the next start. `authorized_keys` ends up exactly as configured, and
   SSH host keys are kept.
 - **Extra disks and shared folders**: sparse extra disks (`/dev/vdb`, …; included in backups unless turned off) and
-  host folders shared over virtiofs, mounted in the guest at `/mnt/shared/<name>` on every boot (optionally read-only).
+  host folders shared over virtiofs, mounted in the guest at `/mnt/shared/<name>` on every boot (optionally read-only;
+  macOS guests mount them at `/Volumes/My Shared Files/<name>`).
 - **Clones and templates**: clone any VM, even a running one (its filesystem is frozen for the instant APFS copy),
-  with all its disks. The clone gets a new MAC address, and on first boot new SSH host keys and machine-id; a static
-  address has to be changed in the clone dialog. Templates can't be started, only cloned.
+  with all its disks. The clone gets a new MAC address, and a Linux clone new SSH host keys and machine-id on first
+  boot; a static address has to be changed in the clone dialog. Templates can't be started, only cloned.
 - **Power**: shutdown (forced after 30 s), stop (at once), reboot through the guest agent, and reset.
 - **Monitoring**: per-VM CPU, memory, network and disk I/O charts (last hour, day or week) from the VM's process on
   the host and the guest agent, which also reports the guest's OS, addresses and filesystems. Host CPU usage.
@@ -301,6 +302,11 @@ and snapshots already pushed to SMB or PBS are left alone.
   without a seed (recreated from a backup) mount shares only by hand:
   `sudo mount -t virtiofs com.apple.virtio-fs.automount /mnt/shared`.
 - Tart can't combine NAT and bridged networking in one VM, so VMs have a single network card.
+- macOS guests (Tart records `"os": "darwin"` in the VM's `config.json`) have no cloud-init: there is no Cloud-Init
+  tab, clones get no seed, and the `ssh user@ip` hint uses the Screen Sharing account saved on the Display tab (only
+  the address until one is saved). macOS mounts shared folders by itself, at `/Volumes/My Shared Files/<name>`, and
+  grows its APFS container into a larger disk on the next boot. A macOS clone keeps its source's host name and
+  hardware identity (`IOPlatformUUID`).
 - cloud-init records each first-boot step as done when it starts it, so a VM stopped during its first boot would
   never get the guest agent, users or SSH host keys. Proxmacs notices that provisioning didn't finish (the guest
   writes a marker last, read through the agent) and rebuilds the seed with a new instance-id on the next start, so

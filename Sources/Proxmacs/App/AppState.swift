@@ -11,10 +11,16 @@ struct VMItem: Identifiable, Hashable {
     var cpus: Int?
     var memoryMB: Int?
     var diskGB: Int?
+    /// From Tart's config.json; nil while VM storage is offline.
+    var os: GuestOS?
+    /// A macOS guest's saved Screen Sharing account, read on refresh.
+    var screenSharingUser: String?
 
     var id: String { meta.name }
     var name: String { meta.name }
     var isRunning: Bool { state == "running" }
+    /// The user in `ssh user@ip` hints; nil for a macOS guest until a Screen Sharing account is saved.
+    var sshUser: String? { os == .darwin ? screenSharingUser : meta.effectiveCloudInit.user }
 }
 
 enum ImageSource: Hashable {
@@ -168,6 +174,7 @@ final class AppState {
             let state = online ? states[meta.name] ?? "missing" : "offline"
             var item = VMItem(meta: meta, state: state, ip: state == "running" ? ips[meta.name] : nil)
             if online { Self.readTartConfig(into: &item) }
+            if item.os == .darwin { item.screenSharingUser = VNCCredentials.username(meta.name) }
             return item
         }
 
@@ -189,6 +196,7 @@ final class AppState {
            let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             item.cpus = (config["cpuCount"] as? NSNumber)?.intValue
             item.memoryMB = (config["memorySize"] as? NSNumber).map { Int($0.int64Value / 1024 / 1024) }
+            item.os = GuestOS(config: config)
         }
         if let size = (try? FileManager.default.attributesOfItem(atPath: dir.appending(path: "disk.img").path))?[.size] as? NSNumber {
             item.diskGB = Int(size.int64Value / 1_000_000_000)
@@ -507,6 +515,9 @@ final class AppState {
     func editCloudInit(_ vm: String, user: String, password: PasswordChange, sshKeys: [String], network: GuestNetwork,
                        taskID: String? = nil) async throws {
         guard let meta = VMMeta.load(vm) else { throw ProxmacsError("No VM named \(vm)") }
+        guard GuestOS.of(vm) != .darwin else {
+            throw ProxmacsError("\(vm) runs macOS, which has no cloud-init: change its accounts and network in the guest")
+        }
         var config = meta.effectiveCloudInit
         config.user = user
         config.sshKeys = sshKeys
@@ -555,24 +566,26 @@ final class AppState {
     // MARK: - Clones and templates
 
     /// Copies a VM (all disks, NVRAM, settings) under a new name, with a new MAC address. A running source is
-    /// cloned like a backup: its root filesystem is frozen for the instant APFS clone. The clone's first boot
-    /// regenerates its SSH host keys and machine-id.
+    /// cloned like a backup: its root filesystem is frozen for the instant APFS clone. A Linux clone's first boot
+    /// regenerates its SSH host keys and machine-id; a macOS clone has no cloud-init and boots as its source did.
     func clone(_ source: String, to name: String, start: Bool, network: GuestNetwork? = nil, taskID: String? = nil) async throws {
         guard let sourceMeta = VMMeta.load(source), FileManager.default.fileExists(atPath: Paths.tartVMDir(source).path) else {
             throw ProxmacsError("No VM named \(source)")
         }
         try validateNewVM(name)
+        let macOS = GuestOS.of(source) == .darwin
         var config = sourceMeta.effectiveCloudInit
         if let network { config.network = network }
-        try config.validate()
+        if !macOS { try config.validate() }
 
         try await performThrowing(name, "Clone \(source)", taskID: taskID) { task in
             let tart = try requireTart()
             let running = item(source)?.isRunning ?? false
             let files = BackupManager.vmFiles + sourceMeta.disks.map(\.file)
-            let agent = try await ImageStore.agentPackages { message, _ in task.message(message) }
+            let agent: [URL] = if macOS { [] } else { try await ImageStore.agentPackages { message, _ in task.message(message) } }
 
             task.message("Creating \(name)…")
+            // Only a placeholder: the source's config.json replaces Tart's, so a macOS source gives a macOS clone.
             try await tart.createLinux(name, diskSizeGB: 1)
             do {
                 let stage = try BackupManager.stagingDir()
@@ -593,12 +606,14 @@ final class AppState {
                 meta.template = false
                 meta.created = Date()
                 meta.seedPending = false
-                meta.newIdentity = true
+                meta.newIdentity = !macOS
                 meta.startOrder = nil
-                meta.cloudInit = config
+                if !macOS { meta.cloudInit = config }
                 try meta.save()
-                task.message("Building cloud-init seed…")
-                try await CloudInitSeed.build(name: name, config: config, agentPackages: agent, newIdentity: true)
+                if !macOS {
+                    task.message("Building cloud-init seed…")
+                    try await CloudInitSeed.build(name: name, config: config, agentPackages: agent, newIdentity: true)
+                }
                 try LaunchAgent.write(tart: tart, meta: meta)
                 if running, !frozen { task.message("Cloned without freezing \(source): guest agent unreachable") }
             } catch {
@@ -713,7 +728,8 @@ final class AppState {
     /// Seeds built before shared folders existed lack the unit that mounts them: rebuild once.
     private func ensureShareMount(_ vm: String) async throws {
         let version = (try? String(contentsOf: CloudInitSeed.versionFile(vm), encoding: .utf8)).flatMap { Int($0) } ?? 1
-        guard version < 2, let meta = VMMeta.load(vm), FileManager.default.fileExists(atPath: Paths.seedISO(vm).path) else { return }
+        guard version < 2, GuestOS.of(vm) != .darwin, let meta = VMMeta.load(vm),
+              FileManager.default.fileExists(atPath: Paths.seedISO(vm).path) else { return }
         let agent = try await ImageStore.agentPackages { _, _ in }
         try await CloudInitSeed.build(name: vm, config: meta.effectiveCloudInit, agentPackages: agent, newIdentity: meta.newIdentity)
     }
@@ -1180,10 +1196,11 @@ final class AppState {
         }
     }
 
+    /// Copies `ssh user@ip`, or only the address when the user isn't known (a macOS guest without a saved account).
     func copySSHCommand(_ item: VMItem) {
         guard let ip = item.ip else { return }
         NSPasteboard.general.clearContents()
-        let command = "ssh \(item.meta.effectiveCloudInit.user)@\(ip)"
+        let command = item.sshUser.map { "ssh \($0)@\(ip)" } ?? ip
         NSPasteboard.general.setString(command, forType: .string)
         status = "Copied: \(command)"
     }

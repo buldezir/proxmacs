@@ -33,6 +33,7 @@ enum VMRunner {
             print("proxmacs: start order: waiting \(delay) s")
             Thread.sleep(forTimeInterval: TimeInterval(delay))
         }
+        let os = GuestOS.of(vm)
 
         // 1. Our own pty; raw mode on the VM side so nothing is echoed or translated.
         var master: Int32 = -1, slave: Int32 = -1
@@ -68,11 +69,12 @@ enum VMRunner {
                 meta.seedPending = false
                 try? meta.save()
             }
-            let provisioning = prepareProvisioning(vm, meta: &meta)
+            // macOS guests have no cloud-init, so there is nothing to provision or confirm.
+            let provisioning = os == .darwin ? nil : prepareProvisioning(vm, meta: &meta)
 
             let process = Process()
             process.executableURL = URL(fileURLWithPath: tart.path)
-            process.arguments = LaunchAgent.tartRunArguments(meta: meta, serialPath: slavePath)
+            process.arguments = LaunchAgent.tartRunArguments(meta: meta, os: os, serialPath: slavePath)
             process.environment = Tart.environment
             let output = TartOutput(process)
             do {

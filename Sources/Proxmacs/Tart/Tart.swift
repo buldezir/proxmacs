@@ -16,6 +16,27 @@ enum IPResolver: String {
     case dhcp, arp, agent
 }
 
+/// The guest OS Tart records in a VM's config.json. Only Linux guests are provisioned with cloud-init.
+enum GuestOS: String, Sendable {
+    case linux, darwin
+
+    init?(config: [String: Any]) {
+        guard let os = config["os"] as? String else { return nil }
+        self.init(rawValue: os)
+    }
+
+    /// nil when config.json can't be read (VM storage offline, VM missing).
+    static func of(_ vm: String) -> GuestOS? {
+        read(Paths.tartVMDir(vm).appending(path: "config.json"))
+    }
+
+    static func read(_ configFile: URL) -> GuestOS? {
+        guard let data = try? Data(contentsOf: configFile),
+              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return GuestOS(config: config)
+    }
+}
+
 /// Thin wrapper around the official (entitlement-signed) `tart` binary.
 struct Tart {
     let path: String

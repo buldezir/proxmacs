@@ -56,7 +56,7 @@ struct ExtraDisk: Codable, Hashable {
     }
 }
 
-/// A host folder shared with the guest over virtiofs; the guest mounts it at /mnt/shared/<name>.
+/// A host folder shared with the guest over virtiofs, at /mnt/shared/<name> (macOS: /Volumes/My Shared Files/<name>).
 struct SharedFolder: Codable, Hashable {
     var name: String
     var path: String

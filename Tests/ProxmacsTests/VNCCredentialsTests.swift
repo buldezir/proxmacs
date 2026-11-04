@@ -34,6 +34,14 @@ final class VNCCredentialsTests: XCTestCase {
         XCTAssertNil(VNCCredentials.load("web1"))
     }
 
+    func testUsernameAlone() throws {
+        XCTAssertNil(VNCCredentials.username("web1"))
+        try VNCCredentials.save("web1", username: "alice", password: "s3cret")
+        XCTAssertEqual(VNCCredentials.username("web1"), "alice")
+        try Secrets.set(VNCCredentials.userKey("web1"), "")
+        XCTAssertNil(VNCCredentials.username("web1"))
+    }
+
     func testClearAlsoDropsTheLegacyPassword() throws {
         try Secrets.set(VNCCredentials.legacyKey("web1"), "old-random-password")
         try VNCCredentials.save("web1", username: "alice", password: "s3cret")

@@ -157,12 +157,14 @@ wait_task "$(api -X POST $PMX/api/vms -d "$(jq -n --argjson keys "$keys" '{name:
 | `POST /api/vms/:name/disks` | `{"sizeGB": 50}`: add an extra disk (VM stopped) → VM |
 | `PUT /api/vms/:name/disks/:file` | `{"sizeGB": 80}` grow (VM stopped), `{"backup": false}` leave out of backups → VM |
 | `DELETE /api/vms/:name/disks/:file` | Remove an extra disk (`disk1.img`, …; VM stopped) → VM |
-| `POST /api/vms/:name/shares` | `{"name": "www", "path": "/Users/me/site", "readOnly": true}`: mounted at `/mnt/shared/<name>` (VM stopped) → VM |
+| `POST /api/vms/:name/shares` | `{"name": "www", "path": "/Users/me/site", "readOnly": true}`: mounted at `/mnt/shared/<name>` (macOS guests: `/Volumes/My Shared Files/<name>`; VM stopped) → VM |
 | `DELETE /api/vms/:name/shares/:share` | Remove a shared folder → VM |
 
 A VM object has `name`, `state` (`running`, `stopped`, …), `ip`, `network` (`{mode: "nat"|"bridged", interface}`),
 `cpus`, `memoryMB`, `diskGB`, `autostart`, `template`, `tags`, `notes`, `startOrder`, `startDelay`, `nested`,
-`disks`, `shares`, `cloudInit` (user, password `set`/`none`, SSH keys, IPv4), `backup` (retention), `offsite`,
+`disks`, `shares`, `os` (`linux`, `darwin`, or null while VM storage is offline), `sshUser` (the cloud-init user, or a
+macOS guest's saved Screen Sharing account, else null), `cloudInit` (user, password `set`/`none`, SSH keys, IPv4; not
+used by macOS guests), `backup` (retention), `offsite`,
 `activity` (an operation in progress, or null) and `stats` (latest sample and `uptime` while running, else null).
 
 Create body (only `name` is required):

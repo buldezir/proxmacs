@@ -15,7 +15,8 @@ export function CloneDialog({ vm, onClose }: { vm: VM; onClose: () => void }) {
   let suggestion = base;
   for (let i = 2; taken.has(suggestion); i++) suggestion = `${base}-${i}`;
 
-  const isStatic = !vm.cloudInit.network.dhcp;
+  // A macOS guest's address isn't Proxmacs's to set (no cloud-init).
+  const isStatic = vm.os !== 'darwin' && !vm.cloudInit.network.dhcp;
   const [name, setName] = useState(suggestion);
   const [start, setStart] = useState(!vm.template && vm.state === 'running');
   const [mode, setMode] = useState<'dhcp' | 'static'>(isStatic ? 'static' : 'dhcp');
@@ -44,8 +45,8 @@ export function CloneDialog({ vm, onClose }: { vm: VM; onClose: () => void }) {
       <form onSubmit={submit}>
         <div className="modal-body stack">
           <p className="muted">
-            Disks are copied as instant APFS clones and take space only as they diverge. The clone gets a new MAC address,
-            and on its first boot new SSH host keys and machine-id.
+            Disks are copied as instant APFS clones and take space only as they diverge. The clone gets a new MAC address
+            {vm.os === 'darwin' ? '.' : ', and on its first boot new SSH host keys and machine-id.'}
             {vm.state === 'running' && ' The running VM’s filesystem is frozen for the moment of the copy.'}
           </p>
           <Field label="Name" hint="Lowercase letters, digits and dashes">
