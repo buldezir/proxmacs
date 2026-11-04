@@ -35,15 +35,16 @@ struct GuestInfo: Sendable {
         """
 
     /// macOS has none of the tools above (its BSD df even rejects the GNU options, failing the whole report), so it
-    /// gets its own. mount and ifconfig are in /sbin, outside the agent's PATH.
+    /// gets its own. Called by absolute path: /sbin is outside the agent's PATH, and a Homebrew tool of the same
+    /// name elsewhere on it must not stand in.
     static let macOSScript = """
-        echo @os; echo "$(sw_vers -productName) $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
-        echo @kernel; uname -r
-        echo @hostname; hostname
-        echo @uptime; sysctl -n kern.boottime | awk -v now="$(date +%s)" '{ gsub(",", "", $4); print now - $4 }'
+        echo @os; echo "$(/usr/bin/sw_vers -productName) $(/usr/bin/sw_vers -productVersion) ($(/usr/bin/sw_vers -buildVersion))"
+        echo @kernel; /usr/bin/uname -r
+        echo @hostname; /bin/hostname
+        echo @uptime; /usr/sbin/sysctl -n kern.boottime | /usr/bin/awk -v now="$(/bin/date +%s)" '{ gsub(",", "", $4); print now - $4 }'
         echo @ifconfig; /sbin/ifconfig
         echo @mount; /sbin/mount
-        echo @dfk; df -k -P -l
+        echo @dfk; /bin/df -k -P -l
         """
 
     static func fetch(_ vm: String, tart: Tart) async throws -> GuestInfo {
@@ -60,20 +61,41 @@ struct GuestInfo: Sendable {
         let macOS = GuestOS.of(vm) == .darwin
         let script = macOS ? "/sbin/ifconfig" : #"ip -4 -o addr show scope global | awk '{ split($4, a, "/"); print a[1] }'"#
         guard let result = try? await GuestShell.shared.run(vm, script, timeout: 10, tart: tart), result.succeeded else { return nil }
-        if macOS { return ifconfigAddress(result.stdout) }
+        if macOS { return ifconfigAddress(result.stdout, mac: TartConfig.macAddress(vm)) }
         return result.stdout.split(separator: "\n").first.map { $0.trimmingCharacters(in: .whitespaces) }.flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    /// The first IPv4 address in macOS `ifconfig` output that isn't loopback or link-local. Interfaces are
-    /// listed in index order, so Tart's network card (en0) comes before VPN tunnels (utun).
-    static func ifconfigAddress(_ text: String) -> String? {
+    /// The guest's IPv4 address in macOS `ifconfig` output: the one on Tart's network card, found by its MAC address,
+    /// so a bridge, a second card or a VPN tunnel can't be taken for it. Without the MAC, or no card with it, the
+    /// first address that isn't loopback or link-local.
+    static func ifconfigAddress(_ text: String, mac: String? = nil) -> String? {
+        if let mac = mac.flatMap(TartConfig.macBytes),
+           let card = ifconfigInterfaces(text).first(where: { $0.mac.flatMap(TartConfig.macBytes) == mac }),
+           let address = card.addresses.lazy.compactMap(usableIPv4).first {
+            return address
+        }
         for line in text.split(separator: "\n") {
             let fields = line.split(whereSeparator: \.isWhitespace)
-            guard fields.count >= 2, fields[0] == "inet" else { continue }
-            let address = String(fields[1])
-            if !address.hasPrefix("127."), !address.hasPrefix("169.254.") { return address }
+            guard fields.count >= 2, fields[0] == "inet", let address = usableIPv4(String(fields[1])) else { continue }
+            return address
         }
         return nil
+    }
+
+    /// An IPv4 address, without a prefix length, that isn't loopback or link-local.
+    private static func usableIPv4(_ text: String) -> String? {
+        let address = text.split(separator: "/").first.map(String.init) ?? text
+        guard address.contains("."), !address.contains(":"), !address.hasPrefix("127."), !address.hasPrefix("169.254.") else {
+            return nil
+        }
+        return address
+    }
+
+    /// Whether a macOS guest answers on port 22, that is, Remote Login is on. nil when the guest can't be asked.
+    static func remoteLogin(_ vm: String, tart: Tart) async -> Bool? {
+        let script = "/usr/bin/nc -z -G 1 127.0.0.1 22 >/dev/null 2>&1 && echo open || echo closed"
+        guard let result = try? await GuestShell.shared.run(vm, script, timeout: 5, tart: tart), result.succeeded else { return nil }
+        return result.stdout.contains("open")
     }
 
     /// Each section marker's lines.

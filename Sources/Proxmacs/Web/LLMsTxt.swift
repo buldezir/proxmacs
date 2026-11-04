@@ -69,7 +69,7 @@ enum LLMsTxt {
           lists `sshKeys`, so to log in yourself, send those keys and yours (example below). A NAT VM (`192.168.64.x`)
           is reachable only from the Mac; a bridged one has an address on the LAN. macOS guests (`os` is `darwin`)
           have no cloud-init: their accounts and keys are set up in the guest, and `sshUser` is the Screen Sharing
-          account saved in the web UI, or null.
+          account saved in the web UI while the guest's Remote Login is on, or null.
         - **On the Mac itself**, `Proxmacs cli` does the same from a shell; run it alone for the list of commands.
 
         """#

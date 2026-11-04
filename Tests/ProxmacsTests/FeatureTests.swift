@@ -353,6 +353,46 @@ final class GuestOSTests: XCTestCase {
         XCTAssertNil(GuestInfo.ifconfigAddress(""))
     }
 
+    /// With Tart's MAC address, the card is found by it, whatever comes first: here Internet Sharing's bridge.
+    func testMacOSGuestAddressByTartsMAC() {
+        let ifconfig = """
+            lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+            \tinet 127.0.0.1 netmask 0xff000000
+            bridge100: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+            \tether 3e:00:00:00:00:64
+            \tinet 192.168.2.1 netmask 0xffffff00 broadcast 192.168.2.255
+            en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+            \tether 0a:67:c6:09:af:5f
+            \tinet6 fd2d:d0e2:9a6f:0:1016:5faf:7d6b:d5f8 prefixlen 64 autoconf secured
+            \tinet 192.168.178.32 netmask 0xffffff00 broadcast 192.168.178.255
+            """
+        XCTAssertEqual(GuestInfo.ifconfigAddress(ifconfig), "192.168.2.1", "without the MAC: the first address")
+        XCTAssertEqual(GuestInfo.ifconfigAddress(ifconfig, mac: "a:67:C6:9:af:5f"), "192.168.178.32", "same card, written differently")
+        XCTAssertEqual(GuestInfo.ifconfigAddress(ifconfig, mac: "02:00:00:00:00:01"), "192.168.2.1", "no card with it: the first address")
+        XCTAssertEqual(TartConfig.macBytes("0A:67:c6:09:AF:5f"), [0x0a, 0x67, 0xc6, 0x09, 0xaf, 0x5f])
+        XCTAssertNil(TartConfig.macBytes("0a:67:c6:09:af"))
+        XCTAssertNil(TartConfig.macBytes("0a:67:c6:09:af:zz"))
+    }
+
+    /// Proxmacs remembers the OS, so a macOS VM is still one while Tart's config.json can't be read.
+    func testRemembersTheOS() throws {
+        let name = "proxmacs-test-\(UUID().uuidString.prefix(8).lowercased())"
+        defer { try? FileManager.default.removeItem(at: Paths.vmDir(name)) }
+        XCTAssertNil(GuestOS.of(name), "never seen")
+        var meta = VMMeta(name: name, network: .nat, autostart: false)
+        meta.os = .darwin
+        try meta.save()
+        XCTAssertEqual(GuestOS.of(name), .darwin, "no config.json, so the remembered OS")
+
+        let saved = try XCTUnwrap(VMMeta.load(name))
+        XCTAssertEqual(saved.os, .darwin)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: Paths.metaFile(name))) as? [String: Any])
+        json["os"] = "windows"
+        let unknown = try JSONDecoder.proxmacs.decode(VMMeta.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(unknown.os, "an OS this version doesn't know is none")
+        XCTAssertEqual(unknown.name, name, "and the rest of the settings still load")
+    }
+
     /// A macOS guest has no systemctl, and `tart exec` hangs if the guest goes down under it.
     func testRebootCommand() throws {
         XCTAssertEqual(GuestOS.rebootCommand(.linux), ["systemctl", "reboot"])
@@ -369,9 +409,14 @@ final class GuestOSTests: XCTestCase {
         var meta = VMMeta(name: "mac", network: .nat, autostart: false)
         var item = VMItem(meta: meta, state: "running", ip: "192.168.64.5")
         item.os = .darwin
+        item.remoteLogin = true
         XCTAssertNil(item.sshUser, "not the cloud-init default")
         item.screenSharingUser = "admin"
         XCTAssertEqual(item.sshUser, "admin")
+        item.remoteLogin = false
+        XCTAssertNil(item.sshUser, "no hint while Remote Login is off")
+        item.remoteLogin = nil
+        XCTAssertNil(item.sshUser, "nor before it's been checked")
 
         meta.cloudInit = CloudInitConfig(user: "ubuntu")
         item = VMItem(meta: meta, state: "running", ip: "192.168.64.6")

@@ -11,16 +11,19 @@ struct VMItem: Identifiable, Hashable {
     var cpus: Int?
     var memoryMB: Int?
     var diskGB: Int?
-    /// From Tart's config.json; nil while VM storage is offline.
+    /// From Tart's config.json, or the OS last seen there while VM storage is offline.
     var os: GuestOS?
     /// A macOS guest's saved Screen Sharing account, read on refresh.
     var screenSharingUser: String?
+    /// Whether a running macOS guest answers on port 22 (Remote Login); nil until checked.
+    var remoteLogin: Bool?
 
     var id: String { meta.name }
     var name: String { meta.name }
     var isRunning: Bool { state == "running" }
-    /// The user in `ssh user@ip` hints; nil for a macOS guest until a Screen Sharing account is saved.
-    var sshUser: String? { os == .darwin ? screenSharingUser : meta.effectiveCloudInit.user }
+    /// The user in `ssh user@ip` hints. A macOS guest has no cloud-init user: its saved Screen Sharing account,
+    /// and only while Remote Login is on.
+    var sshUser: String? { os == .darwin ? (remoteLogin == true ? screenSharingUser : nil) : meta.effectiveCloudInit.user }
 }
 
 enum ImageSource: Hashable {
@@ -127,6 +130,7 @@ final class AppState {
     private(set) var runningJobs: Set<String> = []
 
     private var ips: [String: String] = [:]
+    private var remoteLogins: [String: Bool] = [:]
     private var guestCache: [String: (info: GuestInfo, time: Date)] = [:]
     /// VM name → modification date of its runner's task file when it was last merged.
     private var runnerTasksMerged: [String: Date] = [:]
@@ -174,19 +178,38 @@ final class AppState {
             let state = online ? states[meta.name] ?? "missing" : "offline"
             var item = VMItem(meta: meta, state: state, ip: state == "running" ? ips[meta.name] : nil)
             if online { Self.readTartConfig(into: &item) }
-            if item.os == .darwin { item.screenSharingUser = VNCCredentials.username(meta.name) }
+            if let os = item.os, os != meta.os {
+                // Remembered, so a macOS VM is still known as one while its storage is offline.
+                var remembered = meta
+                remembered.os = os
+                try? remembered.save()
+                item.meta = remembered
+            }
+            item.os = item.os ?? meta.os
+            if item.os == .darwin {
+                item.screenSharingUser = VNCCredentials.username(meta.name)
+                item.remoteLogin = state == "running" ? remoteLogins[meta.name] : nil
+            }
             return item
         }
 
         for item in vms { mergeRunnerTasks(item.name) }
 
         // A stopped VM's address is no longer its own: its next boot may get another one.
-        for item in vms where !item.isRunning { ips[item.name] = nil }
+        for item in vms where !item.isRunning {
+            ips[item.name] = nil
+            remoteLogins[item.name] = nil
+        }
         if online { await GuestShell.shared.keep(Set(vms.filter(\.isRunning).map(\.name))) }
         for item in vms where item.isRunning {
             let ip = await resolveIP(item, tart: tart)
             ips[item.name] = ip
-            if let index = vms.firstIndex(where: { $0.name == item.name }) { vms[index].ip = ip }
+            let remoteLogin: Bool? = if item.os == .darwin { await GuestInfo.remoteLogin(item.name, tart: tart) } else { nil }
+            remoteLogins[item.name] = remoteLogin
+            if let index = vms.firstIndex(where: { $0.name == item.name }) {
+                vms[index].ip = ip
+                vms[index].remoteLogin = remoteLogin
+            }
         }
     }
 
@@ -378,6 +401,7 @@ final class AppState {
             var meta = VMMeta(name: name, network: request.network, autostart: request.autostart)
             meta.cloudInit = config
             meta.image = request.image.label
+            meta.os = .linux
             try meta.save()
             task.message("Building cloud-init seed…")
             try await CloudInitSeed.build(name: name, config: config, agentPackages: agent)
@@ -515,8 +539,10 @@ final class AppState {
     func editCloudInit(_ vm: String, user: String, password: PasswordChange, sshKeys: [String], network: GuestNetwork,
                        taskID: String? = nil) async throws {
         guard let meta = VMMeta.load(vm) else { throw ProxmacsError("No VM named \(vm)") }
-        guard GuestOS.of(vm) != .darwin else {
-            throw ProxmacsError("\(vm) runs macOS, which has no cloud-init: change its accounts and network in the guest")
+        switch GuestOS.of(vm) {
+        case .linux: break
+        case .darwin: throw ProxmacsError("\(vm) runs macOS, which has no cloud-init: change its accounts and network in the guest")
+        case nil: throw unknownOS(vm)
         }
         var config = meta.effectiveCloudInit
         config.user = user
@@ -547,6 +573,12 @@ final class AppState {
         }
     }
 
+    /// Cloud-init work needs to know the guest runs Linux. Proxmacs learns the OS from Tart's config.json, and
+    /// remembers it, so this happens only for a VM it has never seen with its storage connected.
+    private func unknownOS(_ vm: String) -> ProxmacsError {
+        ProxmacsError("Can't tell whether \(vm) runs macOS or Linux while its VM storage is offline: connect it, then try again")
+    }
+
     func updateMeta(_ vm: String, _ change: (inout VMMeta) -> Void) throws {
         guard var meta = VMMeta.load(vm) else { throw ProxmacsError("No VM named \(vm)") }
         change(&meta)
@@ -573,7 +605,8 @@ final class AppState {
             throw ProxmacsError("No VM named \(source)")
         }
         try validateNewVM(name)
-        let macOS = GuestOS.of(source) == .darwin
+        guard let os = GuestOS.of(source) else { throw unknownOS(source) }
+        let macOS = os == .darwin
         var config = sourceMeta.effectiveCloudInit
         if let network { config.network = network }
         if !macOS { try config.validate() }
@@ -608,6 +641,7 @@ final class AppState {
                 meta.seedPending = false
                 meta.newIdentity = !macOS
                 meta.startOrder = nil
+                meta.os = os
                 if !macOS { meta.cloudInit = config }
                 try meta.save()
                 if !macOS {

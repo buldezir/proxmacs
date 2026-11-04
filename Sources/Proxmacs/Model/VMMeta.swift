@@ -197,6 +197,8 @@ struct VMMeta: Codable, Hashable {
     var nested = false
     /// The next boot regenerates SSH host keys and machine-id (set on clones); cleared when the VM starts.
     var newIdentity = false
+    /// The guest OS Proxmacs last read from Tart's config.json, so it's still known while VM storage is offline.
+    var os: GuestOS?
 
     var effectiveCloudInit: CloudInitConfig { cloudInit ?? .legacy }
 
@@ -227,6 +229,8 @@ struct VMMeta: Codable, Hashable {
         shares = try c.decodeIfPresent([SharedFolder].self, forKey: .shares) ?? []
         nested = try c.decodeIfPresent(Bool.self, forKey: .nested) ?? false
         newIdentity = try c.decodeIfPresent(Bool.self, forKey: .newIdentity) ?? false
+        // An OS this version doesn't know is as good as none, not a reason to lose the VM's settings.
+        os = (try? c.decodeIfPresent(GuestOS.self, forKey: .os)) ?? nil
     }
 
     static func isValidTag(_ tag: String) -> Bool {

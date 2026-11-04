@@ -162,8 +162,8 @@ wait_task "$(api -X POST $PMX/api/vms -d "$(jq -n --argjson keys "$keys" '{name:
 
 A VM object has `name`, `state` (`running`, `stopped`, …), `ip`, `network` (`{mode: "nat"|"bridged", interface}`),
 `cpus`, `memoryMB`, `diskGB`, `autostart`, `template`, `tags`, `notes`, `startOrder`, `startDelay`, `nested`,
-`disks`, `shares`, `os` (`linux`, `darwin`, or null while VM storage is offline), `sshUser` (the cloud-init user, or a
-macOS guest's saved Screen Sharing account, else null), `cloudInit` (user, password `set`/`none`, SSH keys, IPv4; not
+`disks`, `shares`, `os` (`linux`, `darwin`, or null for a VM whose Tart config Proxmacs has never read), `sshUser` (the cloud-init user, or a
+macOS guest's saved Screen Sharing account while its Remote Login is on, else null), `cloudInit` (user, password `set`/`none`, SSH keys, IPv4; not
 used by macOS guests), `backup` (retention), `offsite`,
 `activity` (an operation in progress, or null) and `stats` (latest sample and `uptime` while running, else null).
 

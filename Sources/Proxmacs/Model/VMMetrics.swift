@@ -240,8 +240,10 @@ final class VMMetrics {
         var memUsed: UInt64
     }
 
-    /// macOS has no /proc: memory comes from vm_stat, traffic from netstat's per-interface byte counts.
-    nonisolated static let macOSGuestScript = "echo @mem; sysctl -n hw.memsize; vm_stat; echo @net; netstat -ib -n"
+    /// macOS has no /proc: memory comes from vm_stat, traffic from netstat's per-interface byte counts. Absolute
+    /// paths, as in GuestInfo.macOSScript.
+    nonisolated static let macOSGuestScript =
+        "echo @mem; /usr/sbin/sysctl -n hw.memsize; /usr/bin/vm_stat; echo @net; /usr/sbin/netstat -ib -n"
 
     nonisolated private static func guestCounters(_ vm: String, tart: Tart) async -> GuestCounters? {
         let macOS = GuestOS.of(vm) == .darwin

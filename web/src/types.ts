@@ -103,9 +103,9 @@ export interface VM {
   activity: string | null;
   backup: BackupPolicy;
   offsite: OffsitePolicy;
-  /** From Tart's config; null while VM storage is offline. macOS guests have no cloud-init. */
+  /** From Tart's config, remembered while VM storage is offline; null if never read. macOS guests have no cloud-init. */
   os: 'linux' | 'darwin' | null;
-  /** For `ssh user@ip`: the cloud-init user, or a macOS guest's saved Screen Sharing account (else null). */
+  /** For `ssh user@ip`: the cloud-init user, or a macOS guest's saved Screen Sharing account while Remote Login is on (else null). */
   sshUser: string | null;
   cloudInit: CloudInit;
   seedPending: boolean;

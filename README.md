@@ -303,8 +303,10 @@ and snapshots already pushed to SMB or PBS are left alone.
   `sudo mount -t virtiofs com.apple.virtio-fs.automount /mnt/shared`.
 - Tart can't combine NAT and bridged networking in one VM, so VMs have a single network card.
 - macOS guests (Tart records `"os": "darwin"` in the VM's `config.json`) have no cloud-init: there is no Cloud-Init
-  tab, clones get no seed, and the `ssh user@ip` hint uses the Screen Sharing account saved on the Display tab (only
-  the address until one is saved). macOS mounts shared folders by itself, at `/Volumes/My Shared Files/<name>`, and
+  tab, clones get no seed, and the `ssh user@ip` hint uses the Screen Sharing account saved on the Display tab while
+  the guest's Remote Login is on (otherwise only the address). Proxmacs remembers each VM's OS in its `meta.json`,
+  so a macOS VM is still known as one while its storage is offline. The guest's address is the one on Tart's network
+  card, found by its MAC address. macOS mounts shared folders by itself, at `/Volumes/My Shared Files/<name>`, and
   grows its APFS container into a larger disk on the next boot. A macOS clone keeps its source's host name and
   hardware identity (`IOPlatformUUID`). The guest panel comes from macOS's own tools (`sw_vers`, `ifconfig`, `df`
   and the mount table) and shows the APFS container's use for `/`. The charts' guest memory and network figures come from

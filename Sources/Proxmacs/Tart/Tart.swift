@@ -16,8 +16,29 @@ enum IPResolver: String {
     case dhcp, arp, agent
 }
 
+/// A VM's config.json, which Tart owns. nil when it can't be read (VM storage offline, VM missing).
+enum TartConfig {
+    static func url(_ vm: String) -> URL { Paths.tartVMDir(vm).appending(path: "config.json") }
+
+    static func read(_ file: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    /// The VM's network card, e.g. 7a:67:c6:09:af:5f.
+    static func macAddress(_ vm: String) -> String? {
+        read(url(vm))?["macAddress"] as? String
+    }
+
+    /// The six bytes of a MAC address, so 0a:… and a:…, or upper and lower case, compare equal.
+    static func macBytes(_ mac: String) -> [UInt8]? {
+        let bytes = mac.split(separator: ":").compactMap { UInt8($0, radix: 16) }
+        return bytes.count == 6 && mac.split(separator: ":").count == 6 ? bytes : nil
+    }
+}
+
 /// The guest OS Tart records in a VM's config.json. Only Linux guests are provisioned with cloud-init.
-enum GuestOS: String, Sendable {
+enum GuestOS: String, Codable, Sendable {
     case linux, darwin
 
     init?(config: [String: Any]) {
@@ -25,15 +46,14 @@ enum GuestOS: String, Sendable {
         self.init(rawValue: os)
     }
 
-    /// nil when config.json can't be read (VM storage offline, VM missing).
+    /// From Tart's config.json, or while that can't be read (VM storage offline) the OS Proxmacs last saw there
+    /// (VMMeta.os). nil only for a VM whose config it has never read.
     static func of(_ vm: String) -> GuestOS? {
-        read(Paths.tartVMDir(vm).appending(path: "config.json"))
+        read(TartConfig.url(vm)) ?? VMMeta.load(vm)?.os
     }
 
     static func read(_ configFile: URL) -> GuestOS? {
-        guard let data = try? Data(contentsOf: configFile),
-              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return GuestOS(config: config)
+        TartConfig.read(configFile).flatMap(GuestOS.init(config:))
     }
 
     /// Asks the guest, through its agent, to reboot. A macOS guest restarts in place, but `tart exec` never returns
