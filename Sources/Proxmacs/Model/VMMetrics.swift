@@ -77,7 +77,8 @@ final class VMMetrics {
         // Guest counters for all VMs at once.
         let guests = await withTaskGroup(of: (String, GuestCounters?).self) { group in
             for item in running where (agentBackoff[item.name] ?? .distantPast) < Date() {
-                group.addTask { (item.name, await Self.guestCounters(item.name, tart: tart)) }
+                let (name, os) = (item.name, item.os)
+                group.addTask { (name, await Self.guestCounters(name, os: os, tart: tart)) }
             }
             var result: [String: GuestCounters] = [:]
             for await (name, counters) in group {
@@ -252,8 +253,8 @@ final class VMMetrics {
     nonisolated static let macOSGuestScript =
         "echo @mem; /usr/sbin/sysctl -n hw.memsize; /usr/bin/vm_stat; echo @net; /usr/sbin/netstat -ib -n"
 
-    nonisolated private static func guestCounters(_ vm: String, tart: Tart) async -> GuestCounters? {
-        let macOS = GuestOS.of(vm) == .darwin
+    nonisolated private static func guestCounters(_ vm: String, os: GuestOS?, tart: Tart) async -> GuestCounters? {
+        let macOS = os == .darwin
         let script = macOS ? macOSGuestScript : "cat /proc/net/dev /proc/meminfo"
         guard let result = try? await GuestShell.shared.run(vm, script, timeout: 5, tart: tart), result.succeeded else {
             return nil

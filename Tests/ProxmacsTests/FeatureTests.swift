@@ -369,9 +369,48 @@ final class GuestOSTests: XCTestCase {
         XCTAssertEqual(GuestInfo.ifconfigAddress(ifconfig), "192.168.2.1", "without the MAC: the first address")
         XCTAssertEqual(GuestInfo.ifconfigAddress(ifconfig, mac: "a:67:C6:9:af:5f"), "192.168.178.32", "same card, written differently")
         XCTAssertEqual(GuestInfo.ifconfigAddress(ifconfig, mac: "02:00:00:00:00:01"), "192.168.2.1", "no card with it: the first address")
+
+        // Tart's card without a DHCP lease yet, while Tailscale is up.
+        let noLease = """
+            en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+            \tether 0a:67:c6:09:af:5f
+            \tinet6 fe80::188c:5c7a:6d0e:a7bc%en0 prefixlen 64 secured scopeid 0x6
+            \tinet 169.254.10.3 netmask 0xffff0000 broadcast 169.254.255.255
+            utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1280
+            \tinet 100.101.2.3 --> 100.101.2.3 netmask 0xffffffff
+            """
+        XCTAssertNil(GuestInfo.ifconfigAddress(noLease, mac: "0a:67:c6:09:af:5f"), "not the VPN's address")
+        let linkLocalOnly = noLease.replacingOccurrences(of: "\tinet 169.254.10.3 netmask 0xffff0000 broadcast 169.254.255.255\n", with: "")
+        XCTAssertNotEqual(linkLocalOnly, noLease)
+        XCTAssertNil(GuestInfo.ifconfigAddress(linkLocalOnly, mac: "0a:67:c6:09:af:5f"), "nor with only an IPv6 link-local address")
         XCTAssertEqual(TartConfig.macBytes("0A:67:c6:09:AF:5f"), [0x0a, 0x67, 0xc6, 0x09, 0xaf, 0x5f])
         XCTAssertNil(TartConfig.macBytes("0a:67:c6:09:af"))
         XCTAssertNil(TartConfig.macBytes("0a:67:c6:09:af:zz"))
+    }
+
+    /// The address and whether Remote Login is on come from one agent call.
+    func testMacOSAddressAndRemoteLoginInOneCall() {
+        let text = """
+            @ifconfig
+            en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+            \tether 0a:67:c6:09:af:5f
+            \tinet 192.168.178.32 netmask 0xffffff00 broadcast 192.168.178.255
+            @ssh
+            open
+            """
+        XCTAssertEqual(GuestInfo.parseMacOSAddress(text, mac: "0a:67:c6:09:af:5f"), GuestInfo.Address(ip: "192.168.178.32", remoteLogin: true))
+        XCTAssertEqual(GuestInfo.parseMacOSAddress(text.replacingOccurrences(of: "open", with: "closed"), mac: nil),
+                       GuestInfo.Address(ip: "192.168.178.32", remoteLogin: false))
+        XCTAssertEqual(GuestInfo.parseMacOSAddress("@ifconfig\n", mac: nil), GuestInfo.Address(), "no answer about port 22: unknown")
+    }
+
+    /// The same tools on the macOS test machine.
+    func testMacOSAddressScriptRunsOnMacOS() async throws {
+        let result = try await Shell.run("/bin/sh", ["-c", GuestInfo.macOSAddressScript], timeout: 30)
+        XCTAssertTrue(result.succeeded, "status \(result.status): \(result.stderr)")
+        let address = GuestInfo.parseMacOSAddress(result.stdout, mac: nil)
+        XCTAssertNotNil(address.ip, result.stdout)
+        XCTAssertNotNil(address.remoteLogin, result.stdout)
     }
 
     /// Proxmacs remembers the OS, so a macOS VM is still one while Tart's config.json can't be read.
@@ -418,9 +457,11 @@ final class GuestOSTests: XCTestCase {
         let mac = GuestOS.rebootCommand(.darwin)
         XCTAssertEqual(Array(mac.prefix(2)), ["/bin/sh", "-c"])
         let script = try XCTUnwrap(mac.last)
-        XCTAssertTrue(script.hasPrefix("/usr/bin/sudo -n /usr/bin/true && "), "fails, rather than claims a reboot, without passwordless sudo")
+        XCTAssertTrue(script.hasPrefix("/usr/bin/sudo -n /usr/bin/true || exit 99; "),
+                      "fails with its own status, rather than claims a reboot, without passwordless sudo")
+        XCTAssertEqual(GuestOS.noSudoStatus, 99)
         XCTAssertTrue(script.contains("sleep 2; /usr/bin/sudo -n /sbin/shutdown -r now"))
-        XCTAssertTrue(script.hasSuffix("& }"), "in the background, so the agent call returns first")
+        XCTAssertTrue(script.hasSuffix(" &"), "in the background, so the agent call returns first")
     }
 
     func testSSHUserOfAMacOSGuestIsItsScreenSharingAccount() {

@@ -25,11 +25,6 @@ enum TartConfig {
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
-    /// The VM's network card, e.g. 7a:67:c6:09:af:5f.
-    static func macAddress(_ vm: String) -> String? {
-        read(url(vm))?["macAddress"] as? String
-    }
-
     /// The six bytes of a MAC address, so 0a:… and a:…, or upper and lower case, compare equal.
     static func macBytes(_ mac: String) -> [UInt8]? {
         let bytes = mac.split(separator: ":").compactMap { UInt8($0, radix: 16) }
@@ -57,13 +52,16 @@ enum GuestOS: String, Codable, Sendable {
     }
 
     /// Asks the guest, through its agent, to reboot. A macOS guest restarts in place, but `tart exec` never returns
-    /// once the guest goes down, so a background job restarts it after the call has returned. `sudo -n true` fails
-    /// without passwordless sudo, so a reboot that couldn't happen isn't reported as one.
+    /// once the guest goes down, so a background job restarts it after the call has returned. Without passwordless
+    /// sudo it exits with `noSudoStatus` instead, so a reboot that couldn't happen isn't reported as one.
     static func rebootCommand(_ os: GuestOS?) -> [String] {
         guard os == .darwin else { return ["systemctl", "reboot"] }
         return ["/bin/sh", "-c",
-                "/usr/bin/sudo -n /usr/bin/true && { (sleep 2; /usr/bin/sudo -n /sbin/shutdown -r now) </dev/null >/dev/null 2>&1 & }"]
+                "/usr/bin/sudo -n /usr/bin/true || exit \(noSudoStatus); (sleep 2; /usr/bin/sudo -n /sbin/shutdown -r now) </dev/null >/dev/null 2>&1 &"]
     }
+
+    /// `tart exec` passes the guest command's exit status through, and fails with other codes itself.
+    static let noSudoStatus: Int32 = 99
 }
 
 /// Thin wrapper around the official (entitlement-signed) `tart` binary.

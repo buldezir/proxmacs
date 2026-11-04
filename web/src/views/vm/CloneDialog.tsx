@@ -49,7 +49,9 @@ export function CloneDialog({ vm, onClose }: { vm: VM; onClose: () => void }) {
             {vm.os === 'darwin'
               ? ' and serial number, and on its first boot its own host name and new SSH host keys.'
               : ', and on its first boot new SSH host keys and machine-id.'}
-            {vm.state === 'running' && ' The running VM’s filesystem is frozen for the moment of the copy.'}
+            {vm.state === 'running' && (vm.os === 'darwin'
+              ? ' macOS can’t freeze its filesystem, so a copy of the running VM is crash-consistent: shut it down first for a clean one.'
+              : ' The running VM’s filesystem is frozen for the moment of the copy.')}
           </p>
           <Field label="Name" hint="Lowercase letters, digits and dashes">
             <input type="text" required autoFocus pattern="[a-z0-9][a-z0-9\-]{0,62}" autoComplete="off" spellCheck={false}

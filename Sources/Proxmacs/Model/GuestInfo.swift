@@ -47,39 +47,54 @@ struct GuestInfo: Sendable {
         echo @dfk; /bin/df -k -P -l
         """
 
-    static func fetch(_ vm: String, tart: Tart) async throws -> GuestInfo {
-        let macOS = GuestOS.of(vm) == .darwin
+    /// `os` is the VM's, from the refresh (VMItem.os), so a poll doesn't read config.json again.
+    static func fetch(_ vm: String, os: GuestOS?, tart: Tart) async throws -> GuestInfo {
+        let macOS = os == .darwin
         let result = try await GuestShell.shared.run(vm, macOS ? macOSScript : script, timeout: 10, tart: tart)
         guard result.succeeded else { throw ProxmacsError("The guest's report failed (status \(result.status))") }
         return macOS ? parseMacOS(result.stdout) : parse(result.stdout)
     }
 
-    /// The guest's first global IPv4 address, as `tart ip --resolver agent` reports it, or nil when
-    /// the agent can't be reached (yet: it's installed on first boot).
-    static func address(_ vm: String, tart: Tart) async -> String? {
-        // macOS has no `ip`, and its ifconfig is in /sbin, outside the agent's PATH.
-        let macOS = GuestOS.of(vm) == .darwin
-        let script = macOS ? "/sbin/ifconfig" : #"ip -4 -o addr show scope global | awk '{ split($4, a, "/"); print a[1] }'"#
+    /// What each refresh asks a running guest, in one agent call.
+    struct Address: Sendable, Equatable {
+        /// Linux: the first global IPv4 address, as `tart ip --resolver agent` reports it. macOS: see ifconfigAddress.
+        var ip: String?
+        /// macOS only: whether the guest answers on port 22, that is, Remote Login is on.
+        var remoteLogin: Bool?
+    }
+
+    /// nil when the agent can't be reached (yet: a Linux guest gets it on first boot). `os` and `mac` (Tart's network
+    /// card) are the VM's, from the refresh.
+    static func address(_ vm: String, os: GuestOS?, mac: String?, tart: Tart) async -> Address? {
+        let script = os == .darwin ? macOSAddressScript : #"ip -4 -o addr show scope global | awk '{ split($4, a, "/"); print a[1] }'"#
         guard let result = try? await GuestShell.shared.run(vm, script, timeout: 10, tart: tart), result.succeeded else { return nil }
-        if macOS { return ifconfigAddress(result.stdout, mac: TartConfig.macAddress(vm)) }
-        return result.stdout.split(separator: "\n").first.map { $0.trimmingCharacters(in: .whitespaces) }.flatMap { $0.isEmpty ? nil : $0 }
+        if os == .darwin { return parseMacOSAddress(result.stdout, mac: mac) }
+        let ip = result.stdout.split(separator: "\n").first.map { $0.trimmingCharacters(in: .whitespaces) }
+        return Address(ip: ip.flatMap { $0.isEmpty ? nil : $0 })
+    }
+
+    /// macOS has no `ip`, and its ifconfig is in /sbin, outside the agent's PATH.
+    static let macOSAddressScript = """
+        echo @ifconfig; /sbin/ifconfig
+        echo @ssh; /usr/bin/nc -z -G 1 127.0.0.1 22 >/dev/null 2>&1 && echo open || echo closed
+        """
+
+    static func parseMacOSAddress(_ text: String, mac: String?) -> Address {
+        let sections = Self.sections(text)
+        let ssh = sections["ssh"]?.lazy.map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty }
+        return Address(ip: ifconfigAddress(sections["ifconfig"]?.joined(separator: "\n") ?? "", mac: mac),
+                       remoteLogin: ssh.map { $0 == "open" })
     }
 
     /// The guest's IPv4 address in macOS `ifconfig` output: the one on Tart's network card, found by its MAC address,
-    /// so a bridge, a second card or a VPN tunnel can't be taken for it. Without the MAC, or no card with it, the
-    /// first address that isn't loopback or link-local.
+    /// so a bridge, a second card or a VPN tunnel can't be taken for it. That card without a usable address (no DHCP
+    /// lease yet) gives none. Without the MAC, or no card with it, the first address that isn't loopback or link-local.
     static func ifconfigAddress(_ text: String, mac: String? = nil) -> String? {
-        if let mac = mac.flatMap(TartConfig.macBytes),
-           let card = ifconfigInterfaces(text).first(where: { $0.mac.flatMap(TartConfig.macBytes) == mac }),
-           let address = card.addresses.lazy.compactMap(usableIPv4).first {
-            return address
+        let cards = ifconfigCards(text)
+        if let mac = mac.flatMap(TartConfig.macBytes), let card = cards.first(where: { $0.mac.flatMap(TartConfig.macBytes) == mac }) {
+            return card.addresses.lazy.compactMap(usableIPv4).first
         }
-        for line in text.split(separator: "\n") {
-            let fields = line.split(whereSeparator: \.isWhitespace)
-            guard fields.count >= 2, fields[0] == "inet", let address = usableIPv4(String(fields[1])) else { continue }
-            return address
-        }
-        return nil
+        return cards.lazy.flatMap(\.addresses).compactMap(usableIPv4).first
     }
 
     /// An IPv4 address, without a prefix length, that isn't loopback or link-local.
@@ -89,13 +104,6 @@ struct GuestInfo: Sendable {
             return nil
         }
         return address
-    }
-
-    /// Whether a macOS guest answers on port 22, that is, Remote Login is on. nil when the guest can't be asked.
-    static func remoteLogin(_ vm: String, tart: Tart) async -> Bool? {
-        let script = "/usr/bin/nc -z -G 1 127.0.0.1 22 >/dev/null 2>&1 && echo open || echo closed"
-        guard let result = try? await GuestShell.shared.run(vm, script, timeout: 5, tart: tart), result.succeeded else { return nil }
-        return result.stdout.contains("open")
     }
 
     /// Each section marker's lines.
@@ -158,12 +166,15 @@ struct GuestInfo: Sendable {
     /// The interfaces in macOS `ifconfig` output that have an IPv4 or a routable IPv6 address. macOS lists a dozen
     /// more (gif0, stf0, idle utuns) with a link-local address at most.
     static func ifconfigInterfaces(_ text: String) -> [Interface] {
+        ifconfigCards(text).filter { $0.addresses.contains { !$0.hasPrefix("fe80:") } }
+    }
+
+    /// Every interface in macOS `ifconfig` output but loopback.
+    private static func ifconfigCards(_ text: String) -> [Interface] {
         var interfaces: [Interface] = []
         var current: Interface?
         func finish() {
-            if let current, current.name != "lo0", current.addresses.contains(where: { !$0.hasPrefix("fe80:") }) {
-                interfaces.append(current)
-            }
+            if let current, current.name != "lo0" { interfaces.append(current) }
         }
         for line in text.split(separator: "\n") {
             if let first = line.first, !first.isWhitespace, let colon = line.firstIndex(of: ":") {

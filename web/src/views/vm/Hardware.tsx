@@ -186,8 +186,13 @@ function DisksPanel({ vm }: { vm: VM }) {
       )}
       {vm.disks.length > 0 && (
         <p className="muted small prose" style={{ padding: '0 14px 10px' }}>
-          Format a new disk in the guest (e.g. <span className="mono">sudo mkfs.ext4 /dev/vdb</span>) and mount it by UUID in
-          /etc/fstab. Only the root filesystem is frozen during backups.
+          {vm.os === 'darwin' ? (
+            <>Format a new disk in the guest with Disk Utility. macOS can’t freeze its filesystems, so backups of the running VM
+              are crash-consistent.</>
+          ) : (
+            <>Format a new disk in the guest (e.g. <span className="mono">sudo mkfs.ext4 /dev/vdb</span>) and mount it by UUID in
+              /etc/fstab. Only the root filesystem is frozen during backups.</>
+          )}
         </p>
       )}
     </Panel>

@@ -341,8 +341,8 @@ struct WebAPI: Sendable {
                 let source = try await Self.requireVM(state, context)
                 let body = try await API.body(request)
                 guard let name = body["name"] as? String else { throw APIError(message: "name is required") }
-                try await state.validateNewVM(name)
                 let network = (body["ipv4"] as? [String: Any]).map(Self.guestNetwork)
+                try await state.validateClone(source, to: name, network: network)
                 let start = body["start"] as? Bool ?? false
                 let task = Self.newTaskID()
                 Task { @MainActor in try? await state.clone(source, to: name, start: start, network: network, taskID: task) }
