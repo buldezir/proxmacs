@@ -393,6 +393,13 @@ final class GuestOSTests: XCTestCase {
         XCTAssertEqual(unknown.name, name, "and the rest of the settings still load")
     }
 
+    /// A clone gets a new MAC address, and a macOS clone a new machine identifier (serial number) too.
+    func testCloneSetArguments() {
+        XCTAssertEqual(Tart.setArguments("c", randomMAC: true, randomSerial: true), ["set", "c", "--random-mac", "--random-serial"])
+        XCTAssertEqual(Tart.setArguments("c", randomMAC: true), ["set", "c", "--random-mac"])
+        XCTAssertEqual(Tart.setArguments("c", cpu: 4, diskSizeGB: 40), ["set", "c", "--cpu", "4", "--disk-size", "40"])
+    }
+
     /// A macOS guest has no systemctl, and `tart exec` hangs if the guest goes down under it.
     func testRebootCommand() throws {
         XCTAssertEqual(GuestOS.rebootCommand(.linux), ["systemctl", "reboot"])

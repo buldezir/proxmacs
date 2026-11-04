@@ -113,14 +113,23 @@ struct Tart {
     }
 
     func set(_ name: String, cpu: Int? = nil, memoryMB: Int? = nil, disk: URL? = nil, diskSizeGB: Int? = nil,
-             randomMAC: Bool = false) async throws {
+             randomMAC: Bool = false, randomSerial: Bool = false) async throws {
+        try await run(Self.setArguments(name, cpu: cpu, memoryMB: memoryMB, disk: disk, diskSizeGB: diskSizeGB,
+                                        randomMAC: randomMAC, randomSerial: randomSerial))
+    }
+
+    /// `randomSerial`: a new machine identifier (`ecid` in config.json) for a macOS VM, which the guest sees as its
+    /// serial number and IOPlatformUUID.
+    static func setArguments(_ name: String, cpu: Int? = nil, memoryMB: Int? = nil, disk: URL? = nil, diskSizeGB: Int? = nil,
+                             randomMAC: Bool = false, randomSerial: Bool = false) -> [String] {
         var args = ["set", name]
         if randomMAC { args.append("--random-mac") }
+        if randomSerial { args.append("--random-serial") }
         if let cpu { args += ["--cpu", String(cpu)] }
         if let memoryMB { args += ["--memory", String(memoryMB)] }
         if let disk { args += ["--disk", disk.path] }
         if let diskSizeGB { args += ["--disk-size", String(diskSizeGB)] }
-        try await run(args)
+        return args
     }
 
     /// Asks the guest to shut down, forcing it off after `timeout` seconds (0 = immediately).
