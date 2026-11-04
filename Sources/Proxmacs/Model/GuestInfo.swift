@@ -34,10 +34,23 @@ struct GuestInfo: Sendable {
         echo @df; df -PT -B1 -x tmpfs -x devtmpfs -x overlay -x squashfs -x efivarfs -x virtiofs 2>/dev/null
         """
 
+    /// macOS has none of the tools above (its BSD df even rejects the GNU options, failing the whole report), so it
+    /// gets its own. mount and ifconfig are in /sbin, outside the agent's PATH.
+    static let macOSScript = """
+        echo @os; echo "$(sw_vers -productName) $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
+        echo @kernel; uname -r
+        echo @hostname; hostname
+        echo @uptime; sysctl -n kern.boottime | awk -v now="$(date +%s)" '{ gsub(",", "", $4); print now - $4 }'
+        echo @ifconfig; /sbin/ifconfig
+        echo @mount; /sbin/mount
+        echo @dfk; df -k -P -l
+        """
+
     static func fetch(_ vm: String, tart: Tart) async throws -> GuestInfo {
-        let result = try await GuestShell.shared.run(vm, script, timeout: 10, tart: tart)
+        let macOS = GuestOS.of(vm) == .darwin
+        let result = try await GuestShell.shared.run(vm, macOS ? macOSScript : script, timeout: 10, tart: tart)
         guard result.succeeded else { throw ProxmacsError("The guest's report failed (status \(result.status))") }
-        return parse(result.stdout)
+        return macOS ? parseMacOS(result.stdout) : parse(result.stdout)
     }
 
     /// The guest's first global IPv4 address, as `tart ip --resolver agent` reports it, or nil when
@@ -63,7 +76,8 @@ struct GuestInfo: Sendable {
         return nil
     }
 
-    static func parse(_ text: String) -> GuestInfo {
+    /// Each section marker's lines.
+    private static func sections(_ text: String) -> [String: [Substring]] {
         var sections: [String: [Substring]] = [:]
         var current = ""
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -73,12 +87,22 @@ struct GuestInfo: Sendable {
                 sections[current, default: []].append(line)
             }
         }
+        return sections
+    }
+
+    /// OS, kernel, host name and uptime, which both reports give the same way.
+    private static func basics(_ sections: [String: [Substring]]) -> GuestInfo {
         func first(_ key: String) -> String? {
             sections[key]?.lazy.map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty }
         }
-
         var info = GuestInfo(os: first("os"), kernel: first("kernel"), hostname: first("hostname"))
         info.uptime = first("uptime")?.split(separator: " ").first.flatMap { TimeInterval($0) }
+        return info
+    }
+
+    static func parse(_ text: String) -> GuestInfo {
+        let sections = Self.sections(text)
+        var info = basics(sections)
 
         if let json = sections["ip"]?.joined(separator: "\n").data(using: .utf8),
            let list = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]] {
@@ -99,5 +123,78 @@ struct GuestInfo: Sendable {
             info.filesystems.append(Filesystem(device: String(fields[0]), type: String(fields[1]), mount: mount, size: size, used: used))
         }
         return info
+    }
+
+    static func parseMacOS(_ text: String) -> GuestInfo {
+        let sections = Self.sections(text)
+        var info = basics(sections)
+        info.interfaces = ifconfigInterfaces(sections["ifconfig"]?.joined(separator: "\n") ?? "")
+        info.filesystems = macOSFilesystems(df: sections["dfk"] ?? [], mount: sections["mount"] ?? [])
+        return info
+    }
+
+    /// The interfaces in macOS `ifconfig` output that have an IPv4 or a routable IPv6 address. macOS lists a dozen
+    /// more (gif0, stf0, idle utuns) with a link-local address at most.
+    static func ifconfigInterfaces(_ text: String) -> [Interface] {
+        var interfaces: [Interface] = []
+        var current: Interface?
+        func finish() {
+            if let current, current.name != "lo0", current.addresses.contains(where: { !$0.hasPrefix("fe80:") }) {
+                interfaces.append(current)
+            }
+        }
+        for line in text.split(separator: "\n") {
+            if let first = line.first, !first.isWhitespace, let colon = line.firstIndex(of: ":") {
+                finish()
+                current = Interface(name: String(line[..<colon]), mac: nil, addresses: [])
+                continue
+            }
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count >= 2, current != nil else { continue }
+            func after(_ key: String) -> Substring? {
+                fields.firstIndex(of: Substring(key)).flatMap { $0 + 1 < fields.count ? fields[$0 + 1] : nil }
+            }
+            switch fields[0] {
+            case "ether":
+                current?.mac = String(fields[1])
+            case "inet":
+                // netmask 0xffffff00 → /24
+                let prefix = after("netmask").flatMap { UInt32($0.dropFirst(2), radix: 16) }.map(\.nonzeroBitCount)
+                current?.addresses.append(prefix.map { "\(fields[1])/\($0)" } ?? String(fields[1]))
+            case "inet6":
+                let address = fields[1].split(separator: "%").first.map(String.init) ?? String(fields[1])
+                current?.addresses.append(after("prefixlen").map { "\(address)/\($0)" } ?? address)
+            default:
+                break
+            }
+        }
+        finish()
+        return interfaces
+    }
+
+    /// The volumes in `df -k -P` that the Finder shows too: the mount table marks the system's own (Preboot, VM, …)
+    /// nobrowse. Shared folders are left out, as on Linux. APFS volumes share their container's space, so a volume's
+    /// own Used leaves out its siblings ("/" holds only the system; files are on the Data volume): used here is what
+    /// the container has in use.
+    static func macOSFilesystems(df: [Substring], mount: [Substring]) -> [Filesystem] {
+        var mounts: [String: (type: String, nobrowse: Bool)] = [:]
+        for line in mount {
+            // "/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)"
+            guard let on = line.range(of: " on "), let open = line.range(of: " (", options: .backwards),
+                  line.hasSuffix(")"), on.upperBound <= open.lowerBound else { continue }
+            let options = line[open.upperBound..<line.index(before: line.endIndex)]
+                .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard let type = options.first else { continue }
+            mounts[String(line[on.upperBound..<open.lowerBound])] = (type, options.contains("nobrowse"))
+        }
+        return df.dropFirst().compactMap { line in
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count >= 6, let blocks = UInt64(fields[1]), let available = UInt64(fields[3]), blocks > 0 else { return nil }
+            let mountPoint = fields[5...].joined(separator: " ")
+            guard let entry = mounts[mountPoint], !entry.nobrowse, !entry.type.lowercased().contains("virtiofs") else { return nil }
+            let size = blocks * 1024
+            return Filesystem(device: String(fields[0]), type: entry.type, mount: mountPoint, size: size,
+                              used: size - min(available * 1024, size))
+        }
     }
 }

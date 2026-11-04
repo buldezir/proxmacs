@@ -306,9 +306,9 @@ and snapshots already pushed to SMB or PBS are left alone.
   tab, clones get no seed, and the `ssh user@ip` hint uses the Screen Sharing account saved on the Display tab (only
   the address until one is saved). macOS mounts shared folders by itself, at `/Volumes/My Shared Files/<name>`, and
   grows its APFS container into a larger disk on the next boot. A macOS clone keeps its source's host name and
-  hardware identity (`IOPlatformUUID`). The guest's address comes from its `ifconfig`, but the rest of the guest
-  panel (OS, uptime, interfaces, filesystems) and the guest memory and network figures come from Linux tools, so
-  for a macOS guest they show only the kernel and host name.
+  hardware identity (`IOPlatformUUID`). The guest panel comes from macOS's own tools (`sw_vers`, `ifconfig`, `df`
+  and the mount table) and shows the APFS container's use for `/`. The guest memory and network figures still come
+  from Linux's `/proc`, so a macOS guest's charts don't have them.
 - cloud-init records each first-boot step as done when it starts it, so a VM stopped during its first boot would
   never get the guest agent, users or SSH host keys. Proxmacs notices that provisioning didn't finish (the guest
   writes a marker last, read through the agent) and rebuilds the seed with a new instance-id on the next start, so

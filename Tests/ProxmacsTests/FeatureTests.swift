@@ -141,6 +141,83 @@ final class GuestParsingTests: XCTestCase {
         XCTAssertEqual(info.filesystems.map(\.mount), ["/", "/boot/efi"])
         XCTAssertEqual(info.filesystems.first?.used, 1500000000)
     }
+
+    /// From a macOS 27 guest (MAC addresses and the asset volume shortened), plus a shared folder.
+    func testMacOSGuestInfo() {
+        let text = """
+            @os
+            macOS 27.0.1 (26A434)
+            @kernel
+            27.0.0
+            @hostname
+            macos-vm2
+            @uptime
+            2456
+            @ifconfig
+            lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+            \tinet 127.0.0.1 netmask 0xff000000
+            \tinet6 ::1 prefixlen 128
+            \tinet6 fe80::1%lo0 prefixlen 64 scopeid 0x1
+            gif0: flags=8010<POINTOPOINT,MULTICAST> mtu 1280
+            anpi0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+            \tether 3e:00:00:00:00:01
+            \tstatus: inactive
+            en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+            \toptions=463<RXCSUM,TXCSUM,TSO4,TSO6,CHANNEL_IO>
+            \tether 7a:00:00:00:00:02
+            \tinet6 fe80::188c:5c7a:6d0e:a7bc%en0 prefixlen 64 secured scopeid 0x6
+            \tinet6 fd2d:d0e2:9a6f:0:1016:5faf:7d6b:d5f8 prefixlen 64 autoconf secured
+            \tinet 192.168.178.32 netmask 0xffffff00 broadcast 192.168.178.255
+            \tstatus: active
+            utun0: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1380
+            \tinet6 fe80::5e57:4531:d7f:e391%utun0 prefixlen 64 scopeid 0x8
+            utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1280
+            \tinet 100.86.96.95 --> 100.86.96.95 netmask 0xffffffff
+            \tinet6 fd7a:115c:a1e0::5038:6060 --> fd7a:115c:a1e0::5038:6060 prefixlen 128
+            @mount
+            /dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)
+            devfs on /dev (devfs, local, nobrowse)
+            /dev/disk3s6 on /System/Volumes/VM (apfs, local, noexec, journaled, noatime, nobrowse)
+            /dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse, root data)
+            map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
+            /dev/disk5s1 on /System/Library/AssetsV2/x.asset/.AssetData (apfs, sealed, local, read-only, journaled, nobrowse)
+            /dev/disk0 on /Volumes/My Shared Files (AppleVirtIOFS, local, nodev, nosuid, automounted)
+            @dfk
+            Filesystem     1024-blocks     Used Available Capacity  Mounted on
+            /dev/disk3s1s1   189557616 13333684 146802204     9%    /
+            /dev/disk3s6     189557616       20 146802204     1%    /System/Volumes/VM
+            /dev/disk3s5     189557616 17272836 146802204    11%    /System/Volumes/Data
+            /dev/disk5s1          4096      676      3076    19%    /System/Library/AssetsV2/x.asset/.AssetData
+            /dev/disk0         1000000    10000    990000     1%    /Volumes/My Shared Files
+            """
+        let info = GuestInfo.parseMacOS(text)
+        XCTAssertEqual(info.os, "macOS 27.0.1 (26A434)")
+        XCTAssertEqual(info.kernel, "27.0.0")
+        XCTAssertEqual(info.hostname, "macos-vm2")
+        XCTAssertEqual(info.uptime, 2456)
+        XCTAssertEqual(info.interfaces.map(\.name), ["en0", "utun4"], "no loopback, and none with only a link-local address")
+        XCTAssertEqual(info.interfaces.first?.mac, "7a:00:00:00:00:02")
+        XCTAssertEqual(info.interfaces.first?.addresses,
+                       ["fe80::188c:5c7a:6d0e:a7bc/64", "fd2d:d0e2:9a6f:0:1016:5faf:7d6b:d5f8/64", "192.168.178.32/24"])
+        XCTAssertEqual(info.interfaces.last?.addresses, ["100.86.96.95/32", "fd7a:115c:a1e0::5038:6060/128"])
+        XCTAssertNil(info.interfaces.last?.mac)
+        XCTAssertEqual(info.filesystems.map(\.mount), ["/"], "no nobrowse system volumes, no shared folder")
+        XCTAssertEqual(info.filesystems.first?.type, "apfs")
+        XCTAssertEqual(info.filesystems.first?.size, 189557616 * 1024)
+        XCTAssertEqual(info.filesystems.first?.used, (189557616 - 146802204) * 1024, "the container's use, not the system volume's")
+    }
+
+    /// The report runs in the guest; macOS hosts run the same tools, so check it against the real ones here.
+    func testMacOSScriptRunsOnMacOS() async throws {
+        let result = try await Shell.run("/bin/sh", ["-c", GuestInfo.macOSScript], timeout: 30)
+        XCTAssertTrue(result.succeeded, "status \(result.status): \(result.stderr)")
+        let info = GuestInfo.parseMacOS(result.stdout)
+        XCTAssertTrue(info.os?.hasPrefix("macOS ") == true, info.os ?? "no OS")
+        XCTAssertNotNil(info.kernel)
+        XCTAssertGreaterThan(info.uptime ?? 0, 0)
+        XCTAssertTrue(info.filesystems.contains { $0.mount == "/" && $0.used > 0 && $0.used <= $0.size },
+                      "\(info.filesystems.map(\.mount))")
+    }
 }
 
 final class CloneSeedTests: XCTestCase {
