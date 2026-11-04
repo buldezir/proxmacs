@@ -516,3 +516,14 @@ final class APIKeyTests: XCTestCase {
         XCTAssertFalse(text.contains("# Proxmacs web API"), "under one title")
     }
 }
+
+final class SampleJSONTests: XCTestCase {
+    /// The VM process's footprint counts compressed guest memory in full; the API also says how much is in RAM.
+    func testHostMemoryCarriesTheResidentPart() {
+        let sample = VMSample(time: Date(timeIntervalSince1970: 1), cpu: 0.5, memory: 8_000_000_000, memoryResident: 3_000_000_000,
+                              guestUsed: nil, guestTotal: nil, diskRead: 0, diskWrite: 0, netIn: nil, netOut: nil)
+        let json = WebAPI.sampleJSON(sample)
+        XCTAssertEqual(json["memory"] as? Double, 8_000_000_000)
+        XCTAssertEqual(json["memoryResident"] as? Double, 3_000_000_000)
+    }
+}

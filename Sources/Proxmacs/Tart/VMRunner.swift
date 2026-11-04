@@ -114,9 +114,9 @@ enum VMRunner {
             print("proxmacs: tart exited with status \(status)")
             guard !stop.requested, let failure = output.failure() else { break }
 
-            if shouldRetryStart(failure: failure, ranFor: Date().timeIntervalSince(started), retries: startRetries) {
+            if let reason = startRetryReason(failure: failure, ranFor: Date().timeIntervalSince(started), retries: startRetries) {
                 startRetries += 1
-                print("proxmacs: \(vm) didn't start, maybe because its disk image was busy: trying again in 2 s")
+                print("proxmacs: \(vm) didn't start, maybe because \(reason): trying again in 2 s")
                 for _ in 0..<8 where !stop.requested { Thread.sleep(forTimeInterval: 0.25) }
                 if stop.requested { break }
                 continue
@@ -363,12 +363,21 @@ extension VMRunner {
 
     static let maxStartRetries = 3
 
-    /// Whether to run `tart run` again after it failed to start the VM. `tart list` reads the size of a stopped
-    /// VM's disk image, and for a sparse ASIF image (macOS guests) that locks the file for a moment. When
-    /// Virtualization opens the disk at that moment, it can't lock it and the VM fails to start. Proxmacs's own
-    /// refresh right after a start, its polling, or anyone's `tart list` can do that; a second try finds it free.
-    static func shouldRetryStart(failure: String, ranFor: TimeInterval, retries: Int) -> Bool {
-        failure.contains("The virtual machine failed to start.") && ranFor < 15 && retries < maxStartRetries
+    /// Why `tart run` is worth running again after it failed to start the VM, or nil if it isn't. Both causes pass
+    /// within seconds:
+    /// - `tart list` reads the size of a stopped VM's disk image, and for a sparse ASIF image (macOS guests) that
+    ///   locks the file for a moment. When Virtualization opens the disk then, it can't lock it and the VM fails to
+    ///   start. Proxmacs's own refresh right after a start, its polling, or anyone's `tart list` can do that.
+    /// - A VM started again at once (a Reset, or a reboot by stopping and starting) can find its old run not yet
+    ///   ended: macOS still counts it against its limit of two macOS VMs, or it still holds the NVRAM (auxiliary
+    ///   storage) locked.
+    static func startRetryReason(failure: String, ranFor: TimeInterval, retries: Int) -> String? {
+        guard ranFor < 15, retries < maxStartRetries else { return nil }
+        if failure.contains("The virtual machine failed to start.") { return "its disk image was busy" }
+        if failure.contains("The number of VMs exceeds the system limit") || failure.contains("Failed to lock auxiliary storage.") {
+            return "its previous run hadn't ended yet"
+        }
+        return nil
     }
 }
 

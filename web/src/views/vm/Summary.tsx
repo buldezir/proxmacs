@@ -133,6 +133,9 @@ function Usage({ fraction, label }: { fraction: number | null | undefined; label
   return <div>{label}<Meter fraction={fraction} title={label} /></div>;
 }
 
+const HOST_MEMORY_HINT = 'The VM process’s footprint on this Mac: all the guest memory it has written, counted in full '
+  + 'whether it is in RAM or compressed by macOS. Idle guest memory compresses well.';
+
 function MemoryUsage({ vm }: { vm: VM }) {
   const s = vm.stats;
   if (!s?.memory) return <span className="muted">measuring…</span>;
@@ -142,7 +145,11 @@ function MemoryUsage({ vm }: { vm: VM }) {
       {s.guestUsed != null && s.guestTotal
         ? <>{fmtBytes(s.guestUsed)} used in the guest of {fmtBytes(s.guestTotal)}<Meter fraction={s.guestUsed / s.guestTotal} /></>
         : `${fmtMemMB(vm.memoryMB)} assigned`}
-      <div className="small muted">{fmtBytes(s.memory)} of host memory{total ? ` (${fmtPercent(s.memory / total)} of assigned)` : ''}</div>
+      <div className="small muted" title={HOST_MEMORY_HINT}>
+        {fmtBytes(s.memory)} of host memory{total ? ` (${fmtPercent(s.memory / total)} of assigned)` : ''}
+        {/* Only when it says something: a VM that is all in RAM keeps the short line. */}
+        {s.memoryResident != null && fmtBytes(s.memoryResident) !== fmtBytes(s.memory) && `, ${fmtBytes(s.memoryResident)} of it in RAM`}
+      </div>
     </div>
   );
 }

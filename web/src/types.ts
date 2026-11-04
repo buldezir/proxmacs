@@ -53,8 +53,10 @@ export interface VMSample {
   t: number;
   /** Share of the VM's vCPUs in use, 0–1. */
   cpu: number;
-  /** Host memory of the VM process. */
+  /** Host memory of the VM process (physical footprint), counted in full whether in RAM or compressed. */
   memory: number;
+  /** The part of `memory` in the host's RAM. */
+  memoryResident: number;
   guestUsed: number | null;
   guestTotal: number | null;
   diskRead: number;

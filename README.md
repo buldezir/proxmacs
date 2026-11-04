@@ -27,7 +27,9 @@ A Proxmox-flavoured menubar VM manager for Apple Silicon Macs, built on [Tart](h
   Templates can't be started, only cloned.
 - **Power**: shutdown (forced after 30 s), stop (at once), reboot through the guest agent, and reset.
 - **Monitoring**: per-VM CPU, memory, network and disk I/O charts (last hour, day or week) from the VM's process on
-  the host and the guest agent, which also reports the guest's OS, addresses and filesystems. Host CPU usage.
+  the host and the guest agent, which also reports the guest's OS, addresses and filesystems. A VM's host memory is
+  its process's footprint, all the guest memory it has written; the Summary also says how much of that is in RAM,
+  since macOS compresses idle guest memory. Host CPU usage.
 - **Organization**: tags (filter the VM list by name or tag), notes, and start order with startup delays for VMs that
   start on login.
 - **Backups**: instant APFS clones. When the guest agent is reachable, the root filesystem is frozen during the clone.

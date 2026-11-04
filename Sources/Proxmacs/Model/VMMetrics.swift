@@ -6,8 +6,11 @@ struct VMSample: Sendable {
     var time: Date
     /// Share of the VM's virtual CPUs in use, 0…1.
     var cpu: Double
-    /// Host memory of the VM process (physical footprint).
+    /// Host memory of the VM process (physical footprint): all the guest memory it has written, counted in full
+    /// whether it is in RAM or compressed (or swapped) by macOS.
     var memory: Double
+    /// The part of `memory` in the host's RAM. Idle guest memory compresses well, so this can be far less.
+    var memoryResident: Double
     /// Memory in use inside the guest (MemTotal − MemAvailable) and its total, from the guest agent.
     var guestUsed: Double?
     var guestTotal: Double?
@@ -103,6 +106,7 @@ final class VMMetrics {
             }
             let sample = VMSample(
                 time: now, cpu: min(rate(current.cpu, last.cpu) / 1e9 / cpus, 1), memory: Double(usage.footprint),
+                memoryResident: Double(min(usage.resident, usage.footprint)),
                 guestUsed: guest.map { Double($0.memUsed) }, guestTotal: guest.map { Double($0.memTotal) },
                 diskRead: rate(current.diskRead, last.diskRead), diskWrite: rate(current.diskWrite, last.diskWrite),
                 netIn: netIn, netOut: netOut)
@@ -144,6 +148,7 @@ final class VMMetrics {
             return present.isEmpty ? nil : mean(present)
         }
         return VMSample(time: time, cpu: mean(samples.map(\.cpu)), memory: mean(samples.map(\.memory)),
+                        memoryResident: mean(samples.map(\.memoryResident)),
                         guestUsed: optional(samples.map(\.guestUsed)), guestTotal: optional(samples.map(\.guestTotal)),
                         diskRead: mean(samples.map(\.diskRead)), diskWrite: mean(samples.map(\.diskWrite)),
                         netIn: optional(samples.map(\.netIn)), netOut: optional(samples.map(\.netOut)))
@@ -204,6 +209,7 @@ final class VMMetrics {
     private struct ProcessUsage {
         var cpuNanos: UInt64
         var footprint: UInt64
+        var resident: UInt64
         var diskRead: UInt64
         var diskWrite: UInt64
         var started: Date
@@ -227,7 +233,8 @@ final class VMMetrics {
         // CPU times are in Mach absolute time units (not nanoseconds on Apple Silicon).
         let ticks = info.ri_user_time + info.ri_system_time
         let nanos = ticks * UInt64(timebase.numer) / UInt64(max(timebase.denom, 1))
-        return ProcessUsage(cpuNanos: nanos, footprint: info.ri_phys_footprint, diskRead: info.ri_diskio_bytesread,
+        return ProcessUsage(cpuNanos: nanos, footprint: info.ri_phys_footprint, resident: info.ri_resident_size,
+                            diskRead: info.ri_diskio_bytesread,
                             diskWrite: info.ri_diskio_byteswritten, started: started)
     }
 

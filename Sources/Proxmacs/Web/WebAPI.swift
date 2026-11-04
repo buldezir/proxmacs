@@ -235,6 +235,7 @@ struct WebAPI: Sendable {
     static func sampleJSON(_ sample: VMSample) -> [String: Any] {
         func value(_ v: Double?) -> Any { v.map { $0 as Any } ?? NSNull() }
         return ["t": Int(sample.time.timeIntervalSince1970 * 1000), "cpu": sample.cpu, "memory": sample.memory,
+                "memoryResident": sample.memoryResident,
                 "guestUsed": value(sample.guestUsed), "guestTotal": value(sample.guestTotal),
                 "diskRead": sample.diskRead, "diskWrite": sample.diskWrite, "netIn": value(sample.netIn), "netOut": value(sample.netOut)]
     }
