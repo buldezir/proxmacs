@@ -4,6 +4,7 @@ import type { Navigate } from '../../components/Shell';
 import { fmtBytes, fmtMemMB, fmtPercent } from '../../format';
 import { useApp, type StatsSample } from '../../store';
 import type { HostMemory } from '../../types';
+import { UpdatePanel } from './Update';
 
 export function HostSummary({ navigate }: { navigate: Navigate }) {
   const { host, stats, history, vms, storage } = useApp();
@@ -79,6 +80,7 @@ export function HostSummary({ navigate }: { navigate: Navigate }) {
           )}
         </Panel>
       </div>
+      <UpdatePanel />
     </>
   );
 }

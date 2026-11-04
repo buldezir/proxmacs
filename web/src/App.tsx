@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, errorMessage, onUnauthorized } from './api';
 import { Shell } from './components/Shell';
-import { AppDataProvider } from './store';
+import { AppDataProvider, updateRestarting } from './store';
 
 type Auth = 'checking' | 'out' | 'in';
 
@@ -10,7 +10,8 @@ export function App() {
   const [message, setMessage] = useState('');
 
   useEffect(() => {
-    onUnauthorized(() => setAuth('out'));
+    // An update's restart ends the session: reload first, for the new version's web UI.
+    onUnauthorized(() => { if (updateRestarting()) location.reload(); else setAuth('out'); });
     api<{ authenticated: boolean }>('GET', '/api/session').then(
       (s) => setAuth(s.authenticated ? 'in' : 'out'),
       (e) => { setMessage(errorMessage(e)); setAuth('out'); },

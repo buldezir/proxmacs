@@ -121,6 +121,9 @@ wait_task "$(api -X POST $PMX/api/vms -d "$(jq -n --argjson keys "$keys" '{name:
 | `GET /api/host/storage` | Where VM disks and backups are stored, and the external volumes they can move to |
 | `PUT /api/host/storage` | `{"kind": "vms"\|"backups", "path": "/Volumes/…"}` (`path` null = back to the internal disk) → task |
 | `GET /api/host/sshkeys` | The Mac user's SSH public keys |
+| `GET /api/update` | Proxmacs's version and updates: `{version, supported, reason, checking, lastChecked, available, install, error}`. `available` is `{version, date, notes, url}` (notes in Markdown) or null when up to date; `install` is `{phase, progress}` while one runs (`checking`, `downloading`, `extracting`, `installing`) |
+| `POST /api/update/check` | Checks for a new version in the background → `202` and the status; poll `GET /api/update` until `checking` is false |
+| `POST /api/update/install` | Installs the newest version → `202` and the status. Proxmacs quits and opens again (VMs keep running, running tasks are cut off) and every login session ends; an API key keeps working. Only the menubar app of a release build updates (`supported`) |
 | `GET /api/interfaces` | Network interfaces for bridging: `[{device, name, default}]` |
 | `GET /api/tasks` | Task log, newest first: `[{id, vm, title, status, message, progress, started, finished}]` |
 

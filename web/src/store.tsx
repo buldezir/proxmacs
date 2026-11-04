@@ -2,7 +2,32 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState, type
 import { api, AuthError } from './api';
 import { useToast } from './components/Toasts';
 import { NARROW, useLocalStorage, usePoller } from './hooks';
-import type { BackupJob, Host, HostStats, NetInterface, StorageStatus, Target, Task, VM } from './types';
+import type { BackupJob, Host, HostStats, NetInterface, StorageStatus, Target, Task, UpdateStatus, VM } from './types';
+
+/**
+ * The version Proxmacs is updating from, while an update installs: it restarts, which ends every login session,
+ * and the page reloads for the new version's web UI, then says what it updated to.
+ */
+const UPDATING_KEY = 'proxmacs.updatingFrom';
+
+function readUpdating(): string | null {
+  try { return sessionStorage.getItem(UPDATING_KEY); } catch { return null; }
+}
+
+function writeUpdating(version: string | null) {
+  try {
+    if (version) sessionStorage.setItem(UPDATING_KEY, version); else sessionStorage.removeItem(UPDATING_KEY);
+  } catch { /* storage unavailable */ }
+}
+
+/**
+ * The version this page's bundle came with: a newer one serves a newer web UI, so the page reloads. Kept outside
+ * the provider, which a new login mounts again.
+ */
+let pageVersion: string | null = null;
+
+/** True while an update this page saw start may have restarted the server. */
+export const updateRestarting = () => readUpdating() != null;
 
 /** Samples kept for the host memory chart (3 s apart → 6 minutes). */
 const HISTORY = 120;
@@ -27,6 +52,9 @@ interface AppData {
   jobs: BackupJob[];
   interfaces: NetInterface[];
   storage: StorageStatus | null;
+  update: UpdateStatus | null;
+  /** The server went away during an update it was installing, and should be back as the new version. */
+  restarting: boolean;
   /** VM name → number of its tasks that finished since load; views reload their data when it changes. */
   taskEpoch: Record<string, number>;
   tasksOpen: boolean;
@@ -38,6 +66,7 @@ interface AppData {
   reloadJobs(): Promise<void>;
   reloadStorage(): Promise<void>;
   reloadInterfaces(): Promise<NetInterface[]>;
+  reloadUpdate(): Promise<void>;
   /** Starts a backend task (202 {task}); the user is notified when it finishes. */
   startTask(method: string, path: string, body: unknown, label: string): Promise<void>;
   pollNow(): void;
@@ -64,6 +93,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [jobs, setJobs] = useState<BackupJob[]>([]);
   const [interfaces, setInterfaces] = useState<NetInterface[]>([]);
   const [storage, setStorage] = useState<StorageStatus | null>(null);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [taskEpoch, setTaskEpoch] = useState<Record<string, number>>({});
   const [tasksOpen, setTasksOpen] = useLocalStorage('proxmacs.tasksOpen', !matchMedia(NARROW).matches);
 
@@ -149,6 +179,28 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const reloadUpdate = useCallback(async () => {
+    try {
+      const u = await api<UpdateStatus>('GET', '/api/update');
+      const from = readUpdating();
+      pageVersion ??= u.version;
+      if (u.version !== pageVersion) {
+        if (!from) writeUpdating(pageVersion);
+        location.reload();
+        return;
+      }
+      if (u.install) {
+        if (!from) writeUpdating(u.version);
+      } else if (from) {
+        writeUpdating(null);
+        if (from !== u.version) toast(`Proxmacs updated to ${u.version}`, 'ok');
+      }
+      setUpdate(u);
+    } catch (e) {
+      if (!(e instanceof AuthError)) console.warn('update:', e);
+    }
+  }, [toast]);
+
   storageRef.current = () => void reloadStorage();
   jobsRef.current = () => void reloadJobs();
 
@@ -176,6 +228,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   usePoller(refreshStats, 3000);
   usePoller(refreshSlow, 15000);
   usePoller(async () => { await reloadInterfaces(); }, 60000);
+  const restarting = !online && !!update?.install;
+  usePoller(reloadUpdate, update?.checking || update?.install ? 1500 : 60000);
 
   const startTask = useCallback(async (method: string, path: string, body: unknown, label: string) => {
     const r = await api<{ task?: string; message?: string }>(method, path, body);
@@ -195,12 +249,13 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AppData>(() => ({
-    loaded, online, host, stats, history, vms, tasks, targets, jobs, interfaces, storage, taskEpoch, tasksOpen, setTasksOpen,
+    loaded, online, host, stats, history, vms, tasks, targets, jobs, interfaces, storage, update, restarting, taskEpoch, tasksOpen,
+    setTasksOpen,
     vm: (name) => vms.find((v) => v.name === name) ?? null,
     target: (id) => targets.find((t) => String(t.id) === String(id)) ?? null,
-    updateVM, reloadTargets, reloadJobs, reloadStorage, reloadInterfaces, startTask, pollNow,
-  }), [loaded, online, host, stats, history, vms, tasks, targets, jobs, interfaces, storage, taskEpoch, tasksOpen, setTasksOpen,
-    updateVM, reloadTargets, reloadJobs, reloadStorage, reloadInterfaces, startTask, pollNow]);
+    updateVM, reloadTargets, reloadJobs, reloadStorage, reloadInterfaces, reloadUpdate, startTask, pollNow,
+  }), [loaded, online, host, stats, history, vms, tasks, targets, jobs, interfaces, storage, update, restarting, taskEpoch, tasksOpen,
+    setTasksOpen, updateVM, reloadTargets, reloadJobs, reloadStorage, reloadInterfaces, reloadUpdate, startTask, pollNow]);
 
   return <AppDataContext.Provider value={value}>{children}</AppDataContext.Provider>;
 }

@@ -110,7 +110,8 @@ Download `Proxmacs-macOS-arm64.zip` from [Releases](https://github.com/buldezir/
 the web UI run only while Proxmacs is open (VMs that start on login don't need it).
 
 It is signed with Developer ID and notarized by Apple, and updates itself: **Check for Updates…** is in the menubar
-window, and VMs keep running while it updates. If it says it can't be updated, it is running from the temporary copy
+window, and the web UI's host summary checks and installs updates too, without a dialog on the Mac. VMs keep running
+while it updates. If it says it can't be updated, it is running from the temporary copy
 macOS makes of an app opened where it was downloaded: quit it and run
 `xattr -dr com.apple.quarantine /Applications/Proxmacs.app`.
 

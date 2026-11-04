@@ -32,7 +32,9 @@ Run both `swift test` and the web build before you finish a change.
   such as `0.2.0-test.1`, to build an app that offers and takes updates, and a `bundle_id`, such as
   `dev.proxmacs.app.updatetest`, to keep it apart from the installed one.
 
-Proxmacs updates itself with Sparkle (`AppUpdater`), only in the menubar app: `cli` never starts it. `build-app.sh`
+Proxmacs updates itself with Sparkle (`AppUpdater`), only in the menubar app: `cli` never starts it. The web UI checks and
+installs through `/api/update`: while an install it started runs, `UpdateDriver` answers Sparkle in place of its
+windows, so nothing waits for a click on the Mac. `build-app.sh`
 copies Sparkle.framework into the app, where the binary finds it through `@executable_path/../Frameworks`. An update
 that a daily check finds while the app is in the background waits in the menubar window, as **Update to …**. VMs run
 under their own LaunchAgents, so they keep running while the app restarts. Sparkle refuses to update an app that macOS

@@ -418,7 +418,7 @@ fieldset { border: none; padding: 0; margin: 0; min-width: 0; }
   .topbar { gap: 6px; padding-left: calc(8px + var(--inset-left)); padding-right: calc(8px + var(--inset-right)); }
   .nav-toggle { display: inline-flex; }
   .host-info { display: none; }
-  .task-indicator, .mem-indicator { padding: 0 8px; }
+  .task-indicator, .mem-indicator, .update-indicator { padding: 0 8px; }
   .mini-meter { width: 32px; }
 
   .main { grid-template-columns: minmax(0, 1fr); }
@@ -527,7 +527,8 @@ input.narrow { width: 90px; }
 .radio-row input { margin-top: 3px; }
 .radio-row.disabled { cursor: default; opacity: 0.6; }
 .radio-row .hint { color: var(--muted); font-size: 12px; }
-.storage-indicator { height: 28px; }
+.storage-indicator, .update-indicator { height: 28px; }
+.update-indicator { display: inline-flex; align-items: center; gap: 6px; }
 .dot.offline { background: var(--muted); }
 
 /* menu button */
@@ -575,6 +576,10 @@ input.narrow { width: 90px; }
 
 /* notes, guest */
 .notes { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+.release-notes { margin-top: 6px; }
+.release-notes summary { cursor: pointer; color: var(--accent); }
+.release-notes .notes { margin-top: 6px; max-height: 320px; overflow: auto; padding: 8px 10px; background: var(--panel-alt);
+  border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
 .fs-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 12px; }
 .fs-row .meter { flex: 1 0 100%; margin-top: 2px; max-width: none; }
 .stack { display: grid; gap: 10px; }

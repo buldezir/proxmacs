@@ -147,6 +147,21 @@ export interface Host {
   web?: { bind: string; port: number; urls: WebURL[] };
 }
 
+/** GET /api/update: Proxmacs's own updates, which the menubar app installs with Sparkle. */
+export interface UpdateStatus {
+  version: string;
+  /** False for a local build or `cli serve`; `reason` says why. */
+  supported: boolean;
+  reason: string | null;
+  checking: boolean;
+  lastChecked: string | null;
+  /** The newest release, when it is newer than this one. */
+  available: { version: string; date: string | null; notes: string | null; url: string | null } | null;
+  /** An install the web UI started: Proxmacs quits and opens again when it finishes. */
+  install: { phase: 'checking' | 'downloading' | 'extracting' | 'installing'; progress: number | null } | null;
+  error: string | null;
+}
+
 export interface WebURL {
   url: string;
   address: string;

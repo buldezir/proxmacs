@@ -13,6 +13,7 @@ struct WebAPI: Sendable {
     func register(on router: Router<WebContext>) {
         registerAuth(router)
         registerHost(router)
+        registerUpdate(router)
         registerVMs(router)
         registerBackups(router)
         registerTargets(router)
@@ -182,6 +183,50 @@ struct WebAPI: Sendable {
                     "started": task.started.ISO8601Format(), "finished": task.finished?.ISO8601Format() as Any? ?? NSNull(),
                 ]
             })
+        }
+    }
+
+    // MARK: App updates
+
+    @MainActor
+    static func updateJSON() -> [String: Any] {
+        let updater = AppUpdater.shared
+        let available: Any = updater.found.map { release -> [String: Any] in
+            ["version": release.version, "date": release.date?.ISO8601Format() as Any? ?? NSNull(),
+             "notes": release.notes as Any? ?? NSNull(), "url": release.url?.absoluteString as Any? ?? NSNull()]
+        } ?? NSNull()
+        let install: Any = updater.phase.map { ["phase": $0.rawValue, "progress": updater.progress as Any? ?? NSNull()] } ?? NSNull()
+        return [
+            "version": updater.version,
+            "supported": updater.unsupportedReason == nil,
+            "reason": updater.unsupportedReason as Any? ?? NSNull(),
+            "checking": updater.checking,
+            "lastChecked": updater.lastChecked?.ISO8601Format() as Any? ?? NSNull(),
+            "available": available,
+            "install": install,
+            "error": updater.lastError as Any? ?? NSNull(),
+        ]
+    }
+
+    private func registerUpdate(_ router: Router<WebContext>) {
+        router.get("/api/update") { _, _ in
+            await MainActor.run { API.json(Self.updateJSON()) }
+        }
+        router.post("/api/update/check") { _, _ in
+            await API.guarded {
+                try await MainActor.run {
+                    try AppUpdater.shared.checkInBackground()
+                    return API.json(Self.updateJSON(), status: .accepted)
+                }
+            }
+        }
+        router.post("/api/update/install") { _, _ in
+            await API.guarded {
+                try await MainActor.run {
+                    try AppUpdater.shared.install()
+                    return API.json(Self.updateJSON(), status: .accepted)
+                }
+            }
         }
     }
 

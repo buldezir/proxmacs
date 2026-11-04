@@ -78,7 +78,7 @@ export function Shell({ onLogout }: { onLogout: () => void }) {
 function Topbar({ onCreate, onLogout, navigate, navOpen, onToggleNav }: {
   onCreate: () => void; onLogout: () => void; navigate: Navigate; navOpen: boolean; onToggleNav: () => void;
 }) {
-  const { host, stats, tasks, online, storage, setTasksOpen } = useApp();
+  const { host, stats, tasks, online, storage, update, restarting, setTasksOpen } = useApp();
   const offline = storage ? (['vms', 'backups'] as const).filter((k) => !storage[k].available) : [];
   const running = tasks.filter((t) => t.status === 'running').length;
   const memory = stats?.memory;
@@ -112,7 +112,19 @@ function Topbar({ onCreate, onLogout, navigate, navOpen, onToggleNav }: {
           <Badge kind="err"><span className="wide-only">{offline.map((k) => (k === 'vms' ? 'VM storage' : 'Backup storage')).join(' & ')} </span>offline</Badge>
         </button>
       )}
-      {!online && <Badge kind="err">Offline<span className="wide-only">: connection lost</span></Badge>}
+      {update?.install || restarting ? (
+        <button type="button" className="btn update-indicator" title="Proxmacs is installing an update"
+          onClick={() => navigate({ type: 'host', tab: 'summary' })}>
+          <Spinner /><span className="wide-only">{restarting ? 'Restarting' : 'Updating'} Proxmacs…</span>
+        </button>
+      ) : update?.available && (
+        // Narrow screens have no room for it; the host summary says so too.
+        <button type="button" className="btn update-indicator wide-only" title={`Proxmacs ${update.available.version} is available`}
+          onClick={() => navigate({ type: 'host', tab: 'summary' })}>
+          <Badge kind="info">Update available</Badge>
+        </button>
+      )}
+      {!online && !restarting && <Badge kind="err">Offline<span className="wide-only">: connection lost</span></Badge>}
       <button type="button" className={`task-indicator${running ? ' active' : ''}`} title="Show task log" onClick={() => setTasksOpen(true)}>
         {running
           ? <><Spinner /><span className="wide-only">{plural(running, 'task')} running</span><span className="narrow-only">{running}</span></>

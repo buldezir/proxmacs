@@ -83,7 +83,7 @@ struct MenuContent: View {
                     .help("Open data folder")
                 if updater.isRelease {
                     Button(updater.menuTitle) { updater.checkForUpdates() }
-                        .disabled(!updater.canCheck && updater.available == nil)
+                        .disabled(updater.phase != nil || (!updater.canCheck && updater.available == nil))
                         .help("VMs keep running while Proxmacs updates")
                 }
                 Button("Quit") { NSApp.terminate(nil) }
