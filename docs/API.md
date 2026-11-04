@@ -152,7 +152,7 @@ wait_task "$(api -X POST $PMX/api/vms -d "$(jq -n --argjson keys "$keys" '{name:
 | `POST /api/vms/:name/reset` | Turn off and start again → task |
 | `POST /api/vms/:name/clone` | `{"name": "new", "start": false, "ipv4": {…}}` → task |
 | `POST /api/vms/:name/template` | `{"template": true\|false}`: templates can only be cloned → VM |
-| `GET /api/vms/:name/metrics?range=hour\|day\|week` | `{range, step, samples: [{t, cpu, memory, guestUsed, guestTotal, diskRead, diskWrite, netIn, netOut}]}` |
+| `GET /api/vms/:name/metrics?range=hour\|day\|week` | `{range, step, samples: [{t, cpu, memory, memoryResident, guestUsed, guestTotal, diskRead, diskWrite, netIn, netOut}]}`: `memory` is the VM process's footprint on the host, `memoryResident` the part of it in RAM |
 | `GET /api/vms/:name/guest[?refresh=1]` | From the guest agent: OS, kernel, hostname, uptime, interfaces, filesystems (cached 30 s) |
 | `POST /api/vms/:name/disks` | `{"sizeGB": 50}`: add an extra disk (VM stopped) → VM |
 | `PUT /api/vms/:name/disks/:file` | `{"sizeGB": 80}` grow (VM stopped), `{"backup": false}` leave out of backups → VM |
