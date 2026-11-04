@@ -43,9 +43,24 @@ struct GuestInfo: Sendable {
     /// The guest's first global IPv4 address, as `tart ip --resolver agent` reports it, or nil when
     /// the agent can't be reached (yet: it's installed on first boot).
     static func address(_ vm: String, tart: Tart) async -> String? {
-        let script = #"ip -4 -o addr show scope global | awk '{ split($4, a, "/"); print a[1] }'"#
+        // macOS has no `ip`, and its ifconfig is in /sbin, outside the agent's PATH.
+        let macOS = GuestOS.of(vm) == .darwin
+        let script = macOS ? "/sbin/ifconfig" : #"ip -4 -o addr show scope global | awk '{ split($4, a, "/"); print a[1] }'"#
         guard let result = try? await GuestShell.shared.run(vm, script, timeout: 10, tart: tart), result.succeeded else { return nil }
+        if macOS { return ifconfigAddress(result.stdout) }
         return result.stdout.split(separator: "\n").first.map { $0.trimmingCharacters(in: .whitespaces) }.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// The first IPv4 address in macOS `ifconfig` output that isn't loopback or link-local. Interfaces are
+    /// listed in index order, so Tart's network card (en0) comes before VPN tunnels (utun).
+    static func ifconfigAddress(_ text: String) -> String? {
+        for line in text.split(separator: "\n") {
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count >= 2, fields[0] == "inet" else { continue }
+            let address = String(fields[1])
+            if !address.hasPrefix("127."), !address.hasPrefix("169.254.") { return address }
+        }
+        return nil
     }
 
     static func parse(_ text: String) -> GuestInfo {

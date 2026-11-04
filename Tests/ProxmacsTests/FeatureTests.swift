@@ -211,6 +211,28 @@ final class GuestOSTests: XCTestCase {
         XCTAssertNil(GuestOS.read(dir.appending(path: "missing.json")))
     }
 
+    /// macOS has no `ip`: its address comes from `ifconfig`, where a VPN tunnel can follow Tart's en0.
+    func testMacOSGuestAddressFromIfconfig() {
+        let ifconfig = """
+            lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+            \tinet 127.0.0.1 netmask 0xff000000
+            \tinet6 ::1 prefixlen 128
+            gif0: flags=8010<POINTOPOINT,MULTICAST> mtu 1280
+            en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+            \tether 7a:00:00:00:00:01
+            \tinet6 fe80::188c:5c7a:6d0e:a7bc%en0 prefixlen 64 secured scopeid 0x6
+            \tinet 192.168.178.32 netmask 0xffffff00 broadcast 192.168.178.255
+            \tstatus: active
+            utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1280
+            \tinet 100.86.96.95 --> 100.86.96.95 netmask 0xffffffff
+            """
+        XCTAssertEqual(GuestInfo.ifconfigAddress(ifconfig), "192.168.178.32")
+        XCTAssertNil(GuestInfo.ifconfigAddress("en0: flags=8863<UP>\n\tinet 169.254.10.2 netmask 0xffff0000\n"),
+                     "a link-local address isn't one to connect to")
+        XCTAssertNil(GuestInfo.ifconfigAddress("lo0: flags=8049<UP,LOOPBACK>\n\tinet 127.0.0.1 netmask 0xff000000\n"))
+        XCTAssertNil(GuestInfo.ifconfigAddress(""))
+    }
+
     func testSSHUserOfAMacOSGuestIsItsScreenSharingAccount() {
         var meta = VMMeta(name: "mac", network: .nat, autostart: false)
         var item = VMItem(meta: meta, state: "running", ip: "192.168.64.5")
