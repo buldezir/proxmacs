@@ -21,8 +21,9 @@ A Proxmox-flavoured menubar VM manager for Apple Silicon Macs, built on [Tart](h
   host folders shared over virtiofs, mounted in the guest at `/mnt/shared/<name>` on every boot (optionally read-only;
   macOS guests mount them at `/Volumes/My Shared Files/<name>`).
 - **Clones and templates**: clone any VM, even a running one (its filesystem is frozen for the instant APFS copy),
-  with all its disks. The clone gets a new MAC address; a Linux clone also gets new SSH host keys and machine-id on
-  first boot, and a macOS clone a new serial number. A static address has to be changed in the clone dialog.
+  with all its disks. The clone gets a new MAC address, and a macOS clone a new serial number. On first boot a Linux
+  clone gets new SSH host keys and machine-id, and a macOS clone its own host name and new SSH host keys. A static
+  address has to be changed in the clone dialog.
   Templates can't be started, only cloned.
 - **Power**: shutdown (forced after 30 s), stop (at once), reboot through the guest agent, and reset.
 - **Monitoring**: per-VM CPU, memory, network and disk I/O charts (last hour, day or week) from the VM's process on
@@ -309,8 +310,9 @@ and snapshots already pushed to SMB or PBS are left alone.
   so a macOS VM is still known as one while its storage is offline. The guest's address is the one on Tart's network
   card, found by its MAC address. macOS mounts shared folders by itself, at `/Volumes/My Shared Files/<name>`, and
   grows its APFS container into a larger disk on the next boot. A macOS clone gets a new machine identifier (`ecid` in
-  Tart's `config.json`), so its own serial number and `IOPlatformUUID`, but keeps its source's host name, SSH host
-  keys and any fixed IP address set in the guest. The guest panel comes from macOS's own tools (`sw_vers`, `ifconfig`, `df`
+  Tart's `config.json`), so its own serial number and `IOPlatformUUID`. On its first boot Proxmacs sets its host
+  name to the VM's name and replaces its SSH host keys, through the guest agent with passwordless `sudo` (as in the
+  Cirrus Labs images); without that, the next start tries again. It keeps any fixed IP address set in the guest. The guest panel comes from macOS's own tools (`sw_vers`, `ifconfig`, `df`
   and the mount table) and shows the APFS container's use for `/`. The charts' guest memory and network figures come from
   `vm_stat` (used memory as Activity Monitor counts it, like the host's) and `netstat`.
 - cloud-init records each first-boot step as done when it starts it, so a VM stopped during its first boot would

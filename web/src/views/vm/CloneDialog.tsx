@@ -46,7 +46,9 @@ export function CloneDialog({ vm, onClose }: { vm: VM; onClose: () => void }) {
         <div className="modal-body stack">
           <p className="muted">
             Disks are copied as instant APFS clones and take space only as they diverge. The clone gets a new MAC address
-            {vm.os === 'darwin' ? ' and serial number.' : ', and on its first boot new SSH host keys and machine-id.'}
+            {vm.os === 'darwin'
+              ? ' and serial number, and on its first boot its own host name and new SSH host keys.'
+              : ', and on its first boot new SSH host keys and machine-id.'}
             {vm.state === 'running' && ' The running VM’s filesystem is frozen for the moment of the copy.'}
           </p>
           <Field label="Name" hint="Lowercase letters, digits and dashes">

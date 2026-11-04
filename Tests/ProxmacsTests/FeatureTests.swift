@@ -393,6 +393,17 @@ final class GuestOSTests: XCTestCase {
         XCTAssertEqual(unknown.name, name, "and the rest of the settings still load")
     }
 
+    /// Checked as text only: run here, it would rename the test machine.
+    func testMacOSCloneIdentityScript() {
+        let script = VMRunner.macOSIdentityScript(hostName: "mac-clone-2")
+        for key in ["ComputerName", "LocalHostName", "HostName"] {
+            XCTAssertTrue(script.contains("/usr/bin/sudo -n /usr/sbin/scutil --set \(key) 'mac-clone-2'"), key)
+        }
+        XCTAssertTrue(script.contains("rm -f /etc/ssh/ssh_host_* && /usr/bin/ssh-keygen -A"))
+        XCTAssertTrue(script.hasPrefix("{ ") && script.hasSuffix("; } 2>&1"), "errors reach the run log")
+        XCTAssertEqual(script.components(separatedBy: " && ").count, 5, "stops at the first step that fails")
+    }
+
     /// A clone gets a new MAC address, and a macOS clone a new machine identifier (serial number) too.
     func testCloneSetArguments() {
         XCTAssertEqual(Tart.setArguments("c", randomMAC: true, randomSerial: true), ["set", "c", "--random-mac", "--random-serial"])

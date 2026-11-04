@@ -63,6 +63,7 @@ enum VMRunner {
         var restarts: [Date] = []
         var restarting: TaskRecord?
         var startRetries = 0
+        var resettingIdentity = false
         var status: Int32 = 0
         while true {
             // A retry is the same boot: its provisioning is already prepared and being confirmed.
@@ -101,6 +102,9 @@ enum VMRunner {
             }
             if let provisioning {
                 Task.detached { await confirmProvisioning(vm, instance: provisioning, tart: tart) }
+            } else if os == .darwin, meta.newIdentity, !resettingIdentity {
+                resettingIdentity = true
+                Task.detached { await resetMacOSIdentity(vm, tart: tart) }
             }
 
             process.waitUntilExit()
@@ -187,6 +191,47 @@ enum VMRunner {
         state.booted = true
         state.save(vm)
         return state.instance
+    }
+
+    /// A macOS clone's first boot: its own host name and new SSH host keys, which cloud-init does for a Linux clone.
+    /// macOS has no cloud-init, so this goes through the guest agent as soon as that answers. Without passwordless
+    /// sudo nothing changes, and the next start tries again.
+    private static func resetMacOSIdentity(_ vm: String, tart: Tart) async {
+        let deadline = Date().addingTimeInterval(30 * 60)
+        while Date() < deadline {
+            try? await Task.sleep(for: .seconds(10))
+            // Not answering yet: the guest is still booting.
+            guard let result = try? await GuestShell.shared.run(vm, macOSIdentityScript(hostName: vm), timeout: 60, tart: tart) else {
+                continue
+            }
+            await GuestShell.shared.keep([])
+            if result.succeeded {
+                if var meta = VMMeta.load(vm), meta.newIdentity {
+                    meta.newIdentity = false
+                    try? meta.save()
+                }
+                print("proxmacs: gave \(vm) its own host name and new SSH host keys")
+            } else {
+                let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                print("proxmacs: couldn't give \(vm) its own host name and SSH host keys (status \(result.status)): \(output)")
+            }
+            return
+        }
+        await GuestShell.shared.keep([])
+    }
+
+    /// The host name is the VM's name, as cloud-init makes it for a Linux guest; validateNewVM keeps it to lowercase
+    /// letters, digits and dashes. ssh-keygen -A creates the deleted host keys at once, not at the next connection.
+    /// The guest shell discards stderr, so errors go to stdout for the run log.
+    static func macOSIdentityScript(hostName: String) -> String {
+        let sudo = "/usr/bin/sudo -n"
+        let steps = [
+            "\(sudo) /usr/sbin/scutil --set ComputerName '\(hostName)'",
+            "\(sudo) /usr/sbin/scutil --set LocalHostName '\(hostName)'",
+            "\(sudo) /usr/sbin/scutil --set HostName '\(hostName)'",
+            "\(sudo) /bin/sh -c 'rm -f /etc/ssh/ssh_host_* && /usr/bin/ssh-keygen -A'",
+        ]
+        return "{ " + steps.joined(separator: " && ") + "; } 2>&1"
     }
 
     /// Polls the guest (through the agent) for the marker the provisioning script writes last.

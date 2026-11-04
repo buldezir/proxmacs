@@ -599,8 +599,8 @@ final class AppState {
 
     /// Copies a VM (all disks, NVRAM, settings) under a new name, with a new MAC address. A running source is
     /// cloned like a backup: its root filesystem is frozen for the instant APFS clone. A Linux clone's first boot
-    /// regenerates its SSH host keys and machine-id. A macOS clone gets a new machine identifier (serial number) and has
-    /// no cloud-init: it keeps its source's host name and SSH host keys.
+    /// regenerates its SSH host keys and machine-id. A macOS clone gets a new machine identifier (serial number), and on
+    /// its first boot its own host name and new SSH host keys through the guest agent.
     func clone(_ source: String, to name: String, start: Bool, network: GuestNetwork? = nil, taskID: String? = nil) async throws {
         guard let sourceMeta = VMMeta.load(source), FileManager.default.fileExists(atPath: Paths.tartVMDir(source).path) else {
             throw ProxmacsError("No VM named \(source)")
@@ -642,7 +642,8 @@ final class AppState {
                 meta.template = false
                 meta.created = Date()
                 meta.seedPending = false
-                meta.newIdentity = !macOS
+                // Linux: the seed's cloud-init. macOS: the runner, through the guest agent (resetMacOSIdentity).
+                meta.newIdentity = true
                 meta.startOrder = nil
                 meta.os = os
                 if !macOS { meta.cloudInit = config }
