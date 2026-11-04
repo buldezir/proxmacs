@@ -95,19 +95,31 @@ final class GuestShellTests: XCTestCase {
                        "VM \"x\" is already running!")
     }
 
-    /// What tart prints when Virtualization can't lock a macOS VM's disk image that `tart list` is reading.
-    func testRetriesAStartThatFoundTheDiskBusy() throws {
-        let output = """
+    /// What tart prints when Virtualization can't lock a macOS VM's disk image that `tart list` is reading, and when
+    /// a macOS VM is started again before its old run has ended (the VM limit, or its NVRAM still locked).
+    func testRetriesAStartThatFoundTheDiskBusyOrTheVMStillStopping() throws {
+        let busy = """
             Error Domain=VZErrorDomain Code=1 "The virtual machine failed to start." UserInfo={NSLocalizedFailure=\
             Internal Virtualization error., NSLocalizedFailureReason=The virtual machine failed to start.}
             """
-        let failure = try XCTUnwrap(VMRunner.crashReason(output: output + "\n", status: 1, signaled: false))
-        XCTAssertTrue(VMRunner.shouldRetryStart(failure: failure, ranFor: 0.5, retries: 0))
-        XCTAssertTrue(VMRunner.shouldRetryStart(failure: failure, ranFor: 0.5, retries: VMRunner.maxStartRetries - 1))
-        XCTAssertFalse(VMRunner.shouldRetryStart(failure: failure, ranFor: 0.5, retries: VMRunner.maxStartRetries),
-                       "gives up, and the failure is reported as before")
-        XCTAssertFalse(VMRunner.shouldRetryStart(failure: failure, ranFor: 120, retries: 0), "not a VM that ran a while")
-        XCTAssertFalse(VMRunner.shouldRetryStart(failure: "The virtual machine stopped unexpectedly.", ranFor: 0.5, retries: 0))
-        XCTAssertFalse(VMRunner.shouldRetryStart(failure: "VM \"x\" is already running!", ranFor: 0.5, retries: 0))
+        let failure = try XCTUnwrap(VMRunner.crashReason(output: busy + "\n", status: 1, signaled: false))
+        XCTAssertEqual(VMRunner.startRetryReason(failure: failure, ranFor: 0.5, retries: 0), "its disk image was busy")
+        XCTAssertNotNil(VMRunner.startRetryReason(failure: failure, ranFor: 0.5, retries: VMRunner.maxStartRetries - 1))
+        XCTAssertNil(VMRunner.startRetryReason(failure: failure, ranFor: 0.5, retries: VMRunner.maxStartRetries),
+                     "gives up, and the failure is reported as before")
+        XCTAssertNil(VMRunner.startRetryReason(failure: failure, ranFor: 120, retries: 0), "not a VM that ran a while")
+
+        let limit = try XCTUnwrap(VMRunner.crashReason(
+            output: "The number of VMs exceeds the system limit (other running VMs: mac1)\n", status: 1, signaled: false))
+        XCTAssertEqual(VMRunner.startRetryReason(failure: limit, ranFor: 0.3, retries: 0), "its previous run hadn't ended yet")
+        let nvram = try XCTUnwrap(VMRunner.crashReason(output: """
+            Error Domain=VZErrorDomain Code=2 "Failed to lock auxiliary storage." UserInfo={NSLocalizedFailure=\
+            Invalid virtual machine configuration.}
+
+            """, status: 1, signaled: false))
+        XCTAssertEqual(VMRunner.startRetryReason(failure: nvram, ranFor: 0.3, retries: 0), "its previous run hadn't ended yet")
+
+        XCTAssertNil(VMRunner.startRetryReason(failure: "The virtual machine stopped unexpectedly.", ranFor: 0.5, retries: 0))
+        XCTAssertNil(VMRunner.startRetryReason(failure: "VM \"x\" is already running!", ranFor: 0.5, retries: 0))
     }
 }
