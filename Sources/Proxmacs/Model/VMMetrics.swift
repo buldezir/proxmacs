@@ -77,7 +77,8 @@ final class VMMetrics {
         // Guest counters for all VMs at once.
         let guests = await withTaskGroup(of: (String, GuestCounters?).self) { group in
             for item in running where (agentBackoff[item.name] ?? .distantPast) < Date() {
-                group.addTask { (item.name, await Self.guestCounters(item.name, tart: tart)) }
+                let (name, os) = (item.name, item.os)
+                group.addTask { (name, await Self.guestCounters(name, os: os, tart: tart)) }
             }
             var result: [String: GuestCounters] = [:]
             for await (name, counters) in group {
@@ -247,12 +248,54 @@ final class VMMetrics {
         var memUsed: UInt64
     }
 
-    nonisolated private static func guestCounters(_ vm: String, tart: Tart) async -> GuestCounters? {
-        guard let result = try? await GuestShell.shared.run(vm, "cat /proc/net/dev /proc/meminfo", timeout: 5, tart: tart),
-              result.succeeded else {
+    /// macOS has no /proc: memory comes from vm_stat, traffic from netstat's per-interface byte counts. Absolute
+    /// paths, as in GuestInfo.macOSScript.
+    nonisolated static let macOSGuestScript =
+        "echo @mem; /usr/sbin/sysctl -n hw.memsize; /usr/bin/vm_stat; echo @net; /usr/sbin/netstat -ib -n"
+
+    nonisolated private static func guestCounters(_ vm: String, os: GuestOS?, tart: Tart) async -> GuestCounters? {
+        let macOS = os == .darwin
+        let script = macOS ? macOSGuestScript : "cat /proc/net/dev /proc/meminfo"
+        guard let result = try? await GuestShell.shared.run(vm, script, timeout: 5, tart: tart), result.succeeded else {
             return nil
         }
-        return parseGuest(result.stdout)
+        return macOS ? parseMacOSGuest(result.stdout) : parseGuest(result.stdout)
+    }
+
+    /// Used memory is Activity Monitor's figure, as for the host (HostStats): app memory (anonymous pages that
+    /// aren't purgeable), wired and compressed. Traffic is summed over the interfaces but loopback, as on Linux.
+    nonisolated static func parseMacOSGuest(_ text: String) -> GuestCounters? {
+        var total: UInt64?, pageSize: UInt64?
+        var pages: [String: UInt64] = [:]
+        var netIn: UInt64 = 0, netOut: UInt64 = 0
+        var section = ""
+        for line in text.split(separator: "\n") {
+            if line == "@mem" || line == "@net" {
+                section = String(line)
+            } else if section == "@mem" {
+                if total == nil, let bytes = UInt64(line.trimmingCharacters(in: .whitespaces)) {
+                    total = bytes
+                } else if let size = line.range(of: "page size of ") {
+                    pageSize = UInt64(line[size.upperBound...].prefix(while: \.isNumber))
+                } else if let colon = line.firstIndex(of: ":") {
+                    // "Pages wired down:                              70053."
+                    let value = line[line.index(after: colon)...].trimmingCharacters(in: CharacterSet.whitespaces.union(["."]))
+                    if let count = UInt64(value) { pages[String(line[..<colon])] = count }
+                }
+            } else if section == "@net" {
+                // One <Link#n> row per interface with its counters; the address rows repeat them. The columns end
+                // in Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll, and an interface without a MAC has no Address.
+                let fields = line.split(whereSeparator: \.isWhitespace)
+                guard fields.count >= 10, fields[2].hasPrefix("<Link#"), fields[0].trimmingCharacters(in: ["*"]) != "lo0",
+                      let received = UInt64(fields[fields.count - 5]), let sent = UInt64(fields[fields.count - 2]) else { continue }
+                netIn += received
+                netOut += sent
+            }
+        }
+        guard let total, let pageSize, let anonymous = pages["Anonymous pages"], let wired = pages["Pages wired down"],
+              let compressed = pages["Pages occupied by compressor"] else { return nil }
+        let app = anonymous - min(pages["Pages purgeable"] ?? 0, anonymous)
+        return GuestCounters(netIn: netIn, netOut: netOut, memTotal: total, memUsed: min((app + wired + compressed) * pageSize, total))
     }
 
     nonisolated static func parseGuest(_ text: String) -> GuestCounters? {

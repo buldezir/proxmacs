@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { fmtDate, fmtDuration, plural, timeFmt } from '../format';
 import { routeHash, useHashRoute, useLocalStorage, type Route } from '../hooks';
 import { useApp } from '../store';
-import type { Task } from '../types';
+import type { Task, VM } from '../types';
 import { CreateVMDialog } from '../views/CreateVM';
 import { HostSummary } from '../views/host/HostSummary';
 import { ImagesView } from '../views/host/Images';
@@ -30,6 +30,12 @@ const VM_TABS = [
   ['summary', 'Summary'], ['hardware', 'Hardware'], ['cloudinit', 'Cloud-Init'], ['options', 'Options'],
   ['display', 'Display'], ['console', 'Console'], ['backups', 'Backups'], ['offsite', 'Offsite'],
 ] as const;
+const MACOS_VM_TABS = VM_TABS.filter(([id]) => id !== 'cloudinit');
+
+/** macOS guests have no cloud-init. */
+function vmTabs(vm: VM | null) {
+  return vm?.os === 'darwin' ? MACOS_VM_TABS : VM_TABS;
+}
 
 export type Navigate = (route: Route) => void;
 
@@ -44,7 +50,7 @@ export function Shell({ onLogout }: { onLogout: () => void }) {
   // Fall back to the host when the VM is gone; unknown tabs show the summary.
   let route = rawRoute;
   if (route.type === 'vm' && app.loaded && !app.vm(route.name)) route = { type: 'host', tab: 'summary' };
-  const tabs = route.type === 'vm' ? VM_TABS : HOST_TABS;
+  const tabs = route.type === 'vm' ? vmTabs(app.vm(route.name)) : HOST_TABS;
   if (!tabs.some(([id]) => id === route.tab)) route = { ...route, tab: 'summary' };
   // Rewrite the URL only when the route was corrected; otherwise a render that lands between a URL
   // change and its hashchange event would put the old route back.
@@ -185,8 +191,8 @@ function Tree({ route, navigate, open, onLogout }: { route: Route; navigate: Nav
 
 function Content({ route, navigate }: { route: Route; navigate: Navigate }) {
   const app = useApp();
-  const tabs = route.type === 'vm' ? VM_TABS : HOST_TABS;
   const vm = route.type === 'vm' ? app.vm(route.name) : null;
+  const tabs = route.type === 'vm' ? vmTabs(vm) : HOST_TABS;
   const full = route.type === 'vm' && (route.tab === 'console' || route.tab === 'display');
 
   let body: ReactNode = null;

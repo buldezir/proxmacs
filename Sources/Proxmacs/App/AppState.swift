@@ -11,10 +11,21 @@ struct VMItem: Identifiable, Hashable {
     var cpus: Int?
     var memoryMB: Int?
     var diskGB: Int?
+    /// From Tart's config.json, or the OS last seen there while VM storage is offline.
+    var os: GuestOS?
+    /// Tart's network card, from config.json.
+    var mac: String?
+    /// A macOS guest's saved Screen Sharing account, read on refresh.
+    var screenSharingUser: String?
+    /// Whether a running macOS guest answers on port 22 (Remote Login); nil until checked.
+    var remoteLogin: Bool?
 
     var id: String { meta.name }
     var name: String { meta.name }
     var isRunning: Bool { state == "running" }
+    /// The user in `ssh user@ip` hints. A macOS guest has no cloud-init user: its saved Screen Sharing account,
+    /// and only while Remote Login is on.
+    var sshUser: String? { os == .darwin ? (remoteLogin == true ? screenSharingUser : nil) : meta.effectiveCloudInit.user }
 }
 
 enum ImageSource: Hashable {
@@ -121,6 +132,7 @@ final class AppState {
     private(set) var runningJobs: Set<String> = []
 
     private var ips: [String: String] = [:]
+    private var remoteLogins: [String: Bool] = [:]
     private var guestCache: [String: (info: GuestInfo, time: Date)] = [:]
     /// VM name → modification date of its runner's task file when it was last merged.
     private var runnerTasksMerged: [String: Date] = [:]
@@ -164,46 +176,71 @@ final class AppState {
 
         let online = vmStorageOnline && storageBusy != .vms
         let states = online ? Dictionary(((try? await tart.list()) ?? []).map { ($0.name, $0.state) }, uniquingKeysWith: { a, _ in a }) : [:]
-        vms = VMMeta.allNames().compactMap(VMMeta.load).map { meta in
+        var items = VMMeta.allNames().compactMap(VMMeta.load).map { meta in
             let state = online ? states[meta.name] ?? "missing" : "offline"
             var item = VMItem(meta: meta, state: state, ip: state == "running" ? ips[meta.name] : nil)
             if online { Self.readTartConfig(into: &item) }
+            if let os = item.os, os != meta.os {
+                // Remembered, so a macOS VM is still known as one while its storage is offline.
+                var remembered = meta
+                remembered.os = os
+                try? remembered.save()
+                item.meta = remembered
+            }
+            item.os = item.os ?? meta.os
+            if item.os == .darwin { item.remoteLogin = state == "running" ? remoteLogins[meta.name] : nil }
             return item
         }
+        if items.contains(where: { $0.os == .darwin }) {
+            let users = VNCCredentials.usernames()
+            for index in items.indices where items[index].os == .darwin { items[index].screenSharingUser = users[items[index].name] }
+        }
+        vms = items
 
         for item in vms { mergeRunnerTasks(item.name) }
 
         // A stopped VM's address is no longer its own: its next boot may get another one.
-        for item in vms where !item.isRunning { ips[item.name] = nil }
+        for item in vms where !item.isRunning {
+            ips[item.name] = nil
+            remoteLogins[item.name] = nil
+        }
         if online { await GuestShell.shared.keep(Set(vms.filter(\.isRunning).map(\.name))) }
         for item in vms where item.isRunning {
-            let ip = await resolveIP(item, tart: tart)
-            ips[item.name] = ip
-            if let index = vms.firstIndex(where: { $0.name == item.name }) { vms[index].ip = ip }
+            let address = await resolveAddress(item, tart: tart)
+            ips[item.name] = address.ip
+            remoteLogins[item.name] = address.remoteLogin
+            if let index = vms.firstIndex(where: { $0.name == item.name }) {
+                vms[index].ip = address.ip
+                vms[index].remoteLogin = address.remoteLogin
+            }
         }
     }
 
     private static func readTartConfig(into item: inout VMItem) {
-        let dir = Paths.tartVMDir(item.name)
-        if let data = try? Data(contentsOf: dir.appending(path: "config.json")),
-           let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        if let config = TartConfig.read(TartConfig.url(item.name)) {
             item.cpus = (config["cpuCount"] as? NSNumber)?.intValue
             item.memoryMB = (config["memorySize"] as? NSNumber).map { Int($0.int64Value / 1024 / 1024) }
+            item.os = GuestOS(config: config)
+            item.mac = config["macAddress"] as? String
         }
-        if let size = (try? FileManager.default.attributesOfItem(atPath: dir.appending(path: "disk.img").path))?[.size] as? NSNumber {
+        let disk = Paths.tartVMDir(item.name).appending(path: "disk.img")
+        if let size = (try? FileManager.default.attributesOfItem(atPath: disk.path))?[.size] as? NSNumber {
             item.diskGB = Int(size.int64Value / 1_000_000_000)
         }
     }
 
-    private func resolveIP(_ item: VMItem, tart: Tart) async -> String? {
-        // The guest knows the truth in every mode; until its agent is installed (first boot), fall back
-        // to DHCP leases (NAT) or the host ARP table (bridged). Not `tart ip --resolver agent`, which
-        // leaks a connection to the guest each time (see GuestShell).
-        if let ip = await GuestInfo.address(item.name, tart: tart) { return ip }
-        switch item.meta.network {
-        case .nat: return await tart.ip(item.name, resolver: .dhcp)
-        case .bridged: return await tart.ip(item.name, resolver: .arp)
+    private func resolveAddress(_ item: VMItem, tart: Tart) async -> GuestInfo.Address {
+        // The guest knows the truth in every mode; until its agent is installed (first boot), or while
+        // Tart's card has no address in it, fall back to DHCP leases (NAT) or the host ARP table (bridged).
+        // Not `tart ip --resolver agent`, which leaks a connection to the guest each time (see GuestShell).
+        var address = await GuestInfo.address(item.name, os: item.os, mac: item.mac, tart: tart) ?? GuestInfo.Address()
+        if address.ip == nil {
+            address.ip = switch item.meta.network {
+            case .nat: await tart.ip(item.name, resolver: .dhcp)
+            case .bridged: await tart.ip(item.name, resolver: .arp)
+            }
         }
+        return address
     }
 
     func isRunning(_ vm: String) -> Bool { item(vm)?.isRunning == true }
@@ -216,7 +253,7 @@ final class AppState {
     func ip(_ vm: String) async -> String? {
         guard let tart, let item = item(vm), item.isRunning else { return nil }
         if let cached = ips[vm] { return cached }
-        let ip = await resolveIP(item, tart: tart)
+        let ip = await resolveAddress(item, tart: tart).ip
         ips[vm] = ip
         return ip
     }
@@ -370,6 +407,7 @@ final class AppState {
             var meta = VMMeta(name: name, network: request.network, autostart: request.autostart)
             meta.cloudInit = config
             meta.image = request.image.label
+            meta.os = .linux
             try meta.save()
             task.message("Building cloud-init seed…")
             try await CloudInitSeed.build(name: name, config: config, agentPackages: agent)
@@ -431,10 +469,16 @@ final class AppState {
         await perform(vm, force ? "Reset" : "Reboot", taskID: taskID) { task in
             let tart = try requireTart()
             guard item(vm)?.isRunning == true else { throw ProxmacsError("\(vm) is not running") }
-            if !force, (try? await tart.exec(vm, ["systemctl", "reboot"], timeout: 10))?.succeeded == true {
-                return "Rebooting \(vm)"
+            if force {
+                task.message("Turning \(vm) off…")
+            } else {
+                let os = GuestOS.of(vm)
+                let result = try? await tart.exec(vm, GuestOS.rebootCommand(os), timeout: 10)
+                if result?.succeeded == true { return "Rebooting \(vm)" }
+                task.message(os == .darwin && result?.status == GuestOS.noSudoStatus
+                             ? "\(vm) needs passwordless sudo to reboot in place: shutting it down…"
+                             : "Guest agent unreachable: shutting \(vm) down…")
             }
-            task.message(force ? "Turning \(vm) off…" : "Guest agent unreachable: shutting \(vm) down…")
             try await tart.stop(vm, timeout: force ? 0 : 30)
             guard let meta = VMMeta.load(vm) else { throw ProxmacsError("missing metadata") }
             try LaunchAgent.write(tart: tart, meta: meta)
@@ -507,6 +551,11 @@ final class AppState {
     func editCloudInit(_ vm: String, user: String, password: PasswordChange, sshKeys: [String], network: GuestNetwork,
                        taskID: String? = nil) async throws {
         guard let meta = VMMeta.load(vm) else { throw ProxmacsError("No VM named \(vm)") }
+        switch GuestOS.of(vm) {
+        case .linux: break
+        case .darwin: throw ProxmacsError("\(vm) runs macOS, which has no cloud-init: change its accounts and network in the guest")
+        case nil: throw unknownOS(vm)
+        }
         var config = meta.effectiveCloudInit
         config.user = user
         config.sshKeys = sshKeys
@@ -536,6 +585,17 @@ final class AppState {
         }
     }
 
+    /// Cloud-init work needs to know the guest runs Linux. Proxmacs learns the OS from Tart's config.json, and
+    /// remembers it, so this happens only for a VM it has never seen with its storage connected.
+    private func unknownOS(_ vm: String) -> ProxmacsError {
+        ProxmacsError("Can't tell whether \(vm) runs macOS or Linux while its VM storage is offline: connect it, then try again")
+    }
+
+    /// Why a running VM was copied without freezing its filesystem (BackupManager.snapshot).
+    private func unfrozenReason(_ vm: String) -> String {
+        item(vm)?.os == .darwin ? "macOS guests can't be frozen" : "guest agent unreachable"
+    }
+
     func updateMeta(_ vm: String, _ change: (inout VMMeta) -> Void) throws {
         guard var meta = VMMeta.load(vm) else { throw ProxmacsError("No VM named \(vm)") }
         change(&meta)
@@ -554,25 +614,45 @@ final class AppState {
 
     // MARK: - Clones and templates
 
-    /// Copies a VM (all disks, NVRAM, settings) under a new name, with a new MAC address. A running source is
-    /// cloned like a backup: its root filesystem is frozen for the instant APFS clone. The clone's first boot
-    /// regenerates its SSH host keys and machine-id.
-    func clone(_ source: String, to name: String, start: Bool, network: GuestNetwork? = nil, taskID: String? = nil) async throws {
-        guard let sourceMeta = VMMeta.load(source), FileManager.default.fileExists(atPath: Paths.tartVMDir(source).path) else {
+    /// What `clone` refuses before it starts. The API checks it first, so these errors reach the caller rather than
+    /// a task that never appears. Returns the source's settings and OS, and the clone's cloud-init.
+    @discardableResult
+    func validateClone(_ source: String, to name: String, network: GuestNetwork?) throws -> (meta: VMMeta, os: GuestOS, config: CloudInitConfig) {
+        guard let meta = VMMeta.load(source), FileManager.default.fileExists(atPath: Paths.tartVMDir(source).path) else {
             throw ProxmacsError("No VM named \(source)")
         }
         try validateNewVM(name)
-        var config = sourceMeta.effectiveCloudInit
-        if let network { config.network = network }
-        try config.validate()
+        guard let os = GuestOS.of(source) else { throw unknownOS(source) }
+        var config = meta.effectiveCloudInit
+        if os == .darwin {
+            if network != nil {
+                throw ProxmacsError("\(source) runs macOS, which has no cloud-init: clone it without an address, and change the clone's network in the guest")
+            }
+        } else {
+            if let network { config.network = network }
+            try config.validate()
+        }
+        return (meta, os, config)
+    }
+
+    /// Copies a VM (all disks, NVRAM, settings) under a new name, with a new MAC address. A running source is cloned
+    /// like a backup: a Linux guest's root filesystem is frozen for the instant APFS clone, while a macOS guest's copy
+    /// is crash-consistent. A Linux clone's first boot regenerates its SSH host keys and machine-id. A macOS clone gets
+    /// a new machine identifier (serial number), and on its first boot its own host name and new SSH host keys through
+    /// the guest agent.
+    func clone(_ source: String, to name: String, start: Bool, network: GuestNetwork? = nil, taskID: String? = nil) async throws {
+        let (sourceMeta, os, config) = try validateClone(source, to: name, network: network)
+        let macOS = os == .darwin
 
         try await performThrowing(name, "Clone \(source)", taskID: taskID) { task in
             let tart = try requireTart()
             let running = item(source)?.isRunning ?? false
             let files = BackupManager.vmFiles + sourceMeta.disks.map(\.file)
-            let agent = try await ImageStore.agentPackages { message, _ in task.message(message) }
+            var note = ""
+            let agent: [URL] = if macOS { [] } else { try await ImageStore.agentPackages { message, _ in task.message(message) } }
 
             task.message("Creating \(name)…")
+            // Only a placeholder: the source's config.json replaces Tart's, so a macOS source gives a macOS clone.
             try await tart.createLinux(name, diskSizeGB: 1)
             do {
                 let stage = try BackupManager.stagingDir()
@@ -585,7 +665,9 @@ final class AppState {
                     try? FileManager.default.removeItem(at: destination)
                     try FileManager.default.moveItem(at: stage.appending(path: file), to: destination)
                 }
-                try await tart.set(name, randomMAC: true)
+                // A macOS clone with its source's machine identifier would have the same serial number and
+                // IOPlatformUUID, which Apple's services and device management take for the same Mac.
+                try await tart.set(name, randomMAC: true, randomSerial: macOS)
 
                 var meta = sourceMeta
                 meta.name = name
@@ -593,14 +675,18 @@ final class AppState {
                 meta.template = false
                 meta.created = Date()
                 meta.seedPending = false
+                // Linux: the seed's cloud-init. macOS: the runner, through the guest agent (resetMacOSIdentity).
                 meta.newIdentity = true
                 meta.startOrder = nil
-                meta.cloudInit = config
+                meta.os = os
+                if !macOS { meta.cloudInit = config }
                 try meta.save()
-                task.message("Building cloud-init seed…")
-                try await CloudInitSeed.build(name: name, config: config, agentPackages: agent, newIdentity: true)
+                if !macOS {
+                    task.message("Building cloud-init seed…")
+                    try await CloudInitSeed.build(name: name, config: config, agentPackages: agent, newIdentity: true)
+                }
                 try LaunchAgent.write(tart: tart, meta: meta)
-                if running, !frozen { task.message("Cloned without freezing \(source): guest agent unreachable") }
+                if running, !frozen { note = " (crash-consistent: \(unfrozenReason(source)))" }
             } catch {
                 try? await tart.delete(name)
                 try? FileManager.default.removeItem(at: Paths.vmDir(name))
@@ -611,7 +697,7 @@ final class AppState {
                 task.message("Starting \(name)…")
                 try await LaunchAgent.start(name)
             }
-            return "Cloned \(source) to \(name)"
+            return "Cloned \(source) to \(name)\(note)"
         }
     }
 
@@ -713,7 +799,8 @@ final class AppState {
     /// Seeds built before shared folders existed lack the unit that mounts them: rebuild once.
     private func ensureShareMount(_ vm: String) async throws {
         let version = (try? String(contentsOf: CloudInitSeed.versionFile(vm), encoding: .utf8)).flatMap { Int($0) } ?? 1
-        guard version < 2, let meta = VMMeta.load(vm), FileManager.default.fileExists(atPath: Paths.seedISO(vm).path) else { return }
+        guard version < 2, GuestOS.of(vm) != .darwin, let meta = VMMeta.load(vm),
+              FileManager.default.fileExists(atPath: Paths.seedISO(vm).path) else { return }
         let agent = try await ImageStore.agentPackages { _, _ in }
         try await CloudInitSeed.build(name: vm, config: meta.effectiveCloudInit, agentPackages: agent, newIdentity: meta.newIdentity)
     }
@@ -724,8 +811,8 @@ final class AppState {
     func guestInfo(_ vm: String, refresh: Bool = false) async throws -> GuestInfo {
         if !refresh, let cached = guestCache[vm], Date().timeIntervalSince(cached.time) < 30 { return cached.info }
         let tart = try requireTart()
-        guard item(vm)?.isRunning == true else { throw ProxmacsError("\(vm) is not running") }
-        let info = try await GuestInfo.fetch(vm, tart: tart)
+        guard let item = item(vm), item.isRunning else { throw ProxmacsError("\(vm) is not running") }
+        let info = try await GuestInfo.fetch(vm, os: item.os, tart: tart)
         guestCache[vm] = (info, Date())
         return info
     }
@@ -743,7 +830,7 @@ final class AppState {
             let running = item(vm)?.isRunning ?? false
             let policy = VMMeta.load(vm)?.backup ?? BackupPolicy()
             let info = try await BackupManager.backup(vm, running: running, tart: tart, policy: policy) { task.progress($0) }
-            return info.record.consistent ? "Backup of \(vm) done" : "Backup of \(vm) done (crash-consistent: guest agent unreachable)"
+            return info.record.consistent ? "Backup of \(vm) done" : "Backup of \(vm) done (crash-consistent: \(unfrozenReason(vm)))"
         }
         guard ok, let meta = VMMeta.load(vm), meta.offsite.auto, let latest = BackupManager.list(vm).first else { return ok }
         for target in meta.offsite.targets {
@@ -763,7 +850,7 @@ final class AppState {
             let running = item(vm)?.isRunning ?? false
             task.message("Backing up \(vm) to \(target.name)…")
             let record = try await BackupManager.backup(vm, running: running, tart: tart, to: backend) { task.progress($0) }
-            let kind = record.consistent ? "" : " (crash-consistent: guest agent unreachable)"
+            let kind = record.consistent ? "" : " (crash-consistent: \(unfrozenReason(vm)))"
             do {
                 try await backend.prune(vm: vm, keep: target.keep)
             } catch {
@@ -1180,10 +1267,11 @@ final class AppState {
         }
     }
 
+    /// Copies `ssh user@ip`, or only the address when the user isn't known (a macOS guest without a saved account).
     func copySSHCommand(_ item: VMItem) {
         guard let ip = item.ip else { return }
         NSPasteboard.general.clearContents()
-        let command = "ssh \(item.meta.effectiveCloudInit.user)@\(ip)"
+        let command = item.sshUser.map { "ssh \($0)@\(ip)" } ?? ip
         NSPasteboard.general.setString(command, forType: .string)
         status = "Copied: \(command)"
     }

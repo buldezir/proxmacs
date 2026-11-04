@@ -101,14 +101,16 @@ export function VMSummary({ vm, navigate }: { vm: VM; navigate: Navigate }) {
           ]} />
         </Panel>
         {running && <GuestPanel vm={vm} />}
-        <Panel title="Cloud-Init" extra={edit('cloudinit')}>
-          <KV rows={[
-            ['User', <span className="mono">{ci.user}</span>],
-            ['Password', { set: 'set', none: 'none', unknown: 'unchanged since creation' }[ci.password]],
-            ['SSH keys', ci.sshKeys.length ? `${ci.sshKeys.length} key${ci.sshKeys.length === 1 ? '' : 's'}` : 'none'],
-            ['IPv4', ci.network.dhcp ? 'DHCP' : <span className="mono">{ci.network.address}{ci.network.gateway && ` via ${ci.network.gateway}`}</span>],
-          ]} />
-        </Panel>
+        {vm.os !== 'darwin' && (
+          <Panel title="Cloud-Init" extra={edit('cloudinit')}>
+            <KV rows={[
+              ['User', <span className="mono">{ci.user}</span>],
+              ['Password', { set: 'set', none: 'none', unknown: 'unchanged since creation' }[ci.password]],
+              ['SSH keys', ci.sshKeys.length ? `${ci.sshKeys.length} key${ci.sshKeys.length === 1 ? '' : 's'}` : 'none'],
+              ['IPv4', ci.network.dhcp ? 'DHCP' : <span className="mono">{ci.network.address}{ci.network.gateway && ` via ${ci.network.gateway}`}</span>],
+            ]} />
+          </Panel>
+        )}
         <Panel title="Protection" extra={edit('backups')}>
           <KV rows={[
             ['Backup jobs', jobs.length
@@ -155,7 +157,9 @@ function MemoryUsage({ vm }: { vm: VM }) {
 function IPCell({ vm }: { vm: VM }) {
   const [copied, setCopied] = useState<string | null>(null);
   if (!vm.ip) return <span className="muted">{vm.state === 'running' ? 'waiting for an address…' : '—'}</span>;
-  const ssh = `ssh ${vm.cloudInit.user}@${vm.ip}`;
+  // A macOS guest's user is known only once its Screen Sharing account is saved.
+  if (!vm.sshUser) return <div className="mono">{vm.ip}</div>;
+  const ssh = `ssh ${vm.sshUser}@${vm.ip}`;
   const copy = async () => {
     setCopied((await copyText(ssh)) ? 'Copied' : 'Copy failed');
     window.setTimeout(() => setCopied(null), 1500);

@@ -41,7 +41,9 @@ export function BackupDialog({ vm, onClose }: { vm: VM; onClose: () => void }) {
             </select>
           </Field>
           {vm.state === 'running' && (
-            <p className="muted small">The guest’s root filesystem is frozen for the moment of the clone.</p>
+            <p className="muted small">{vm.os === 'darwin'
+              ? 'macOS can’t freeze its filesystem, so a backup of the running VM is crash-consistent: shut it down first for a clean one.'
+              : 'The guest’s root filesystem is frozen for the moment of the clone.'}</p>
           )}
         </div>
         <div className="modal-footer">

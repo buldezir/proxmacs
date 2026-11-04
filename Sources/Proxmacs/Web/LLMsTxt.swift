@@ -64,10 +64,12 @@ enum LLMsTxt {
           are like pulling the plug; and stopping or rebooting a VM that something else may be using. Prefer `stop`,
           a clean shutdown, to `poweroff`.
         - **Getting into a VM.** The API doesn't run commands in guests: use SSH. A running VM's `ip` shows up in
-          `GET /api/vms`, a minute or so after its first boot. Log in as its `cloudInit.user` with a key in
-          `cloudInit.sshKeys`. A new VM gets the Mac user's keys (`GET /api/host/sshkeys`) unless the request lists
-          `sshKeys`, so to log in yourself, send those keys and yours (example below). A NAT VM (`192.168.64.x`) is
-          reachable only from the Mac; a bridged one has an address on the LAN.
+          `GET /api/vms`, a minute or so after its first boot. Log in as its `sshUser` (the cloud-init user) with a
+          key in `cloudInit.sshKeys`. A new VM gets the Mac user's keys (`GET /api/host/sshkeys`) unless the request
+          lists `sshKeys`, so to log in yourself, send those keys and yours (example below). A NAT VM (`192.168.64.x`)
+          is reachable only from the Mac; a bridged one has an address on the LAN. macOS guests (`os` is `darwin`)
+          have no cloud-init: their accounts and keys are set up in the guest, and `sshUser` is the Screen Sharing
+          account saved in the web UI while the guest's Remote Login is on, or null.
         - **On the Mac itself**, `Proxmacs cli` does the same from a shell; run it alone for the list of commands.
 
         """#

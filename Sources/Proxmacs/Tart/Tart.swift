@@ -16,6 +16,54 @@ enum IPResolver: String {
     case dhcp, arp, agent
 }
 
+/// A VM's config.json, which Tart owns. nil when it can't be read (VM storage offline, VM missing).
+enum TartConfig {
+    static func url(_ vm: String) -> URL { Paths.tartVMDir(vm).appending(path: "config.json") }
+
+    static func read(_ file: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    /// The six bytes of a MAC address, so 0a:… and a:…, or upper and lower case, compare equal.
+    static func macBytes(_ mac: String) -> [UInt8]? {
+        let bytes = mac.split(separator: ":").compactMap { UInt8($0, radix: 16) }
+        return bytes.count == 6 && mac.split(separator: ":").count == 6 ? bytes : nil
+    }
+}
+
+/// The guest OS Tart records in a VM's config.json. Only Linux guests are provisioned with cloud-init.
+enum GuestOS: String, Codable, Sendable {
+    case linux, darwin
+
+    init?(config: [String: Any]) {
+        guard let os = config["os"] as? String else { return nil }
+        self.init(rawValue: os)
+    }
+
+    /// From Tart's config.json, or while that can't be read (VM storage offline) the OS Proxmacs last saw there
+    /// (VMMeta.os). nil only for a VM whose config it has never read.
+    static func of(_ vm: String) -> GuestOS? {
+        read(TartConfig.url(vm)) ?? VMMeta.load(vm)?.os
+    }
+
+    static func read(_ configFile: URL) -> GuestOS? {
+        TartConfig.read(configFile).flatMap(GuestOS.init(config:))
+    }
+
+    /// Asks the guest, through its agent, to reboot. A macOS guest restarts in place, but `tart exec` never returns
+    /// once the guest goes down, so a background job restarts it after the call has returned. Without passwordless
+    /// sudo it exits with `noSudoStatus` instead, so a reboot that couldn't happen isn't reported as one.
+    static func rebootCommand(_ os: GuestOS?) -> [String] {
+        guard os == .darwin else { return ["systemctl", "reboot"] }
+        return ["/bin/sh", "-c",
+                "/usr/bin/sudo -n /usr/bin/true || exit \(noSudoStatus); (sleep 2; /usr/bin/sudo -n /sbin/shutdown -r now) </dev/null >/dev/null 2>&1 &"]
+    }
+
+    /// `tart exec` passes the guest command's exit status through, and fails with other codes itself.
+    static let noSudoStatus: Int32 = 99
+}
+
 /// Thin wrapper around the official (entitlement-signed) `tart` binary.
 struct Tart {
     let path: String
@@ -63,14 +111,23 @@ struct Tart {
     }
 
     func set(_ name: String, cpu: Int? = nil, memoryMB: Int? = nil, disk: URL? = nil, diskSizeGB: Int? = nil,
-             randomMAC: Bool = false) async throws {
+             randomMAC: Bool = false, randomSerial: Bool = false) async throws {
+        try await run(Self.setArguments(name, cpu: cpu, memoryMB: memoryMB, disk: disk, diskSizeGB: diskSizeGB,
+                                        randomMAC: randomMAC, randomSerial: randomSerial))
+    }
+
+    /// `randomSerial`: a new machine identifier (`ecid` in config.json) for a macOS VM, which the guest sees as its
+    /// serial number and IOPlatformUUID.
+    static func setArguments(_ name: String, cpu: Int? = nil, memoryMB: Int? = nil, disk: URL? = nil, diskSizeGB: Int? = nil,
+                             randomMAC: Bool = false, randomSerial: Bool = false) -> [String] {
         var args = ["set", name]
         if randomMAC { args.append("--random-mac") }
+        if randomSerial { args.append("--random-serial") }
         if let cpu { args += ["--cpu", String(cpu)] }
         if let memoryMB { args += ["--memory", String(memoryMB)] }
         if let disk { args += ["--disk", disk.path] }
         if let diskSizeGB { args += ["--disk-size", String(diskSizeGB)] }
-        try await run(args)
+        return args
     }
 
     /// Asks the guest to shut down, forcing it off after `timeout` seconds (0 = immediately).

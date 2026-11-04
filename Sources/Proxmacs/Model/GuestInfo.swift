@@ -34,21 +34,80 @@ struct GuestInfo: Sendable {
         echo @df; df -PT -B1 -x tmpfs -x devtmpfs -x overlay -x squashfs -x efivarfs -x virtiofs 2>/dev/null
         """
 
-    static func fetch(_ vm: String, tart: Tart) async throws -> GuestInfo {
-        let result = try await GuestShell.shared.run(vm, script, timeout: 10, tart: tart)
+    /// macOS has none of the tools above (its BSD df even rejects the GNU options, failing the whole report), so it
+    /// gets its own. Called by absolute path: /sbin is outside the agent's PATH, and a Homebrew tool of the same
+    /// name elsewhere on it must not stand in.
+    static let macOSScript = """
+        echo @os; echo "$(/usr/bin/sw_vers -productName) $(/usr/bin/sw_vers -productVersion) ($(/usr/bin/sw_vers -buildVersion))"
+        echo @kernel; /usr/bin/uname -r
+        echo @hostname; /bin/hostname
+        echo @uptime; /usr/sbin/sysctl -n kern.boottime | /usr/bin/awk -v now="$(/bin/date +%s)" '{ gsub(",", "", $4); print now - $4 }'
+        echo @ifconfig; /sbin/ifconfig
+        echo @mount; /sbin/mount
+        echo @dfk; /bin/df -k -P -l
+        """
+
+    /// `os` is the VM's, from the refresh (VMItem.os), so a poll doesn't read config.json again.
+    static func fetch(_ vm: String, os: GuestOS?, tart: Tart) async throws -> GuestInfo {
+        let macOS = os == .darwin
+        let result = try await GuestShell.shared.run(vm, macOS ? macOSScript : script, timeout: 10, tart: tart)
         guard result.succeeded else { throw ProxmacsError("The guest's report failed (status \(result.status))") }
-        return parse(result.stdout)
+        return macOS ? parseMacOS(result.stdout) : parse(result.stdout)
     }
 
-    /// The guest's first global IPv4 address, as `tart ip --resolver agent` reports it, or nil when
-    /// the agent can't be reached (yet: it's installed on first boot).
-    static func address(_ vm: String, tart: Tart) async -> String? {
-        let script = #"ip -4 -o addr show scope global | awk '{ split($4, a, "/"); print a[1] }'"#
+    /// What each refresh asks a running guest, in one agent call.
+    struct Address: Sendable, Equatable {
+        /// Linux: the first global IPv4 address, as `tart ip --resolver agent` reports it. macOS: see ifconfigAddress.
+        var ip: String?
+        /// macOS only: whether the guest answers on port 22, that is, Remote Login is on.
+        var remoteLogin: Bool?
+    }
+
+    /// nil when the agent can't be reached (yet: a Linux guest gets it on first boot). `os` and `mac` (Tart's network
+    /// card) are the VM's, from the refresh.
+    static func address(_ vm: String, os: GuestOS?, mac: String?, tart: Tart) async -> Address? {
+        let script = os == .darwin ? macOSAddressScript : #"ip -4 -o addr show scope global | awk '{ split($4, a, "/"); print a[1] }'"#
         guard let result = try? await GuestShell.shared.run(vm, script, timeout: 10, tart: tart), result.succeeded else { return nil }
-        return result.stdout.split(separator: "\n").first.map { $0.trimmingCharacters(in: .whitespaces) }.flatMap { $0.isEmpty ? nil : $0 }
+        if os == .darwin { return parseMacOSAddress(result.stdout, mac: mac) }
+        let ip = result.stdout.split(separator: "\n").first.map { $0.trimmingCharacters(in: .whitespaces) }
+        return Address(ip: ip.flatMap { $0.isEmpty ? nil : $0 })
     }
 
-    static func parse(_ text: String) -> GuestInfo {
+    /// macOS has no `ip`, and its ifconfig is in /sbin, outside the agent's PATH.
+    static let macOSAddressScript = """
+        echo @ifconfig; /sbin/ifconfig
+        echo @ssh; /usr/bin/nc -z -G 1 127.0.0.1 22 >/dev/null 2>&1 && echo open || echo closed
+        """
+
+    static func parseMacOSAddress(_ text: String, mac: String?) -> Address {
+        let sections = Self.sections(text)
+        let ssh = sections["ssh"]?.lazy.map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty }
+        return Address(ip: ifconfigAddress(sections["ifconfig"]?.joined(separator: "\n") ?? "", mac: mac),
+                       remoteLogin: ssh.map { $0 == "open" })
+    }
+
+    /// The guest's IPv4 address in macOS `ifconfig` output: the one on Tart's network card, found by its MAC address,
+    /// so a bridge, a second card or a VPN tunnel can't be taken for it. That card without a usable address (no DHCP
+    /// lease yet) gives none. Without the MAC, or no card with it, the first address that isn't loopback or link-local.
+    static func ifconfigAddress(_ text: String, mac: String? = nil) -> String? {
+        let cards = ifconfigCards(text)
+        if let mac = mac.flatMap(TartConfig.macBytes), let card = cards.first(where: { $0.mac.flatMap(TartConfig.macBytes) == mac }) {
+            return card.addresses.lazy.compactMap(usableIPv4).first
+        }
+        return cards.lazy.flatMap(\.addresses).compactMap(usableIPv4).first
+    }
+
+    /// An IPv4 address, without a prefix length, that isn't loopback or link-local.
+    private static func usableIPv4(_ text: String) -> String? {
+        let address = text.split(separator: "/").first.map(String.init) ?? text
+        guard address.contains("."), !address.contains(":"), !address.hasPrefix("127."), !address.hasPrefix("169.254.") else {
+            return nil
+        }
+        return address
+    }
+
+    /// Each section marker's lines.
+    private static func sections(_ text: String) -> [String: [Substring]] {
         var sections: [String: [Substring]] = [:]
         var current = ""
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -58,12 +117,22 @@ struct GuestInfo: Sendable {
                 sections[current, default: []].append(line)
             }
         }
+        return sections
+    }
+
+    /// OS, kernel, host name and uptime, which both reports give the same way.
+    private static func basics(_ sections: [String: [Substring]]) -> GuestInfo {
         func first(_ key: String) -> String? {
             sections[key]?.lazy.map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty }
         }
-
         var info = GuestInfo(os: first("os"), kernel: first("kernel"), hostname: first("hostname"))
         info.uptime = first("uptime")?.split(separator: " ").first.flatMap { TimeInterval($0) }
+        return info
+    }
+
+    static func parse(_ text: String) -> GuestInfo {
+        let sections = Self.sections(text)
+        var info = basics(sections)
 
         if let json = sections["ip"]?.joined(separator: "\n").data(using: .utf8),
            let list = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]] {
@@ -84,5 +153,81 @@ struct GuestInfo: Sendable {
             info.filesystems.append(Filesystem(device: String(fields[0]), type: String(fields[1]), mount: mount, size: size, used: used))
         }
         return info
+    }
+
+    static func parseMacOS(_ text: String) -> GuestInfo {
+        let sections = Self.sections(text)
+        var info = basics(sections)
+        info.interfaces = ifconfigInterfaces(sections["ifconfig"]?.joined(separator: "\n") ?? "")
+        info.filesystems = macOSFilesystems(df: sections["dfk"] ?? [], mount: sections["mount"] ?? [])
+        return info
+    }
+
+    /// The interfaces in macOS `ifconfig` output that have an IPv4 or a routable IPv6 address. macOS lists a dozen
+    /// more (gif0, stf0, idle utuns) with a link-local address at most.
+    static func ifconfigInterfaces(_ text: String) -> [Interface] {
+        ifconfigCards(text).filter { $0.addresses.contains { !$0.hasPrefix("fe80:") } }
+    }
+
+    /// Every interface in macOS `ifconfig` output but loopback.
+    private static func ifconfigCards(_ text: String) -> [Interface] {
+        var interfaces: [Interface] = []
+        var current: Interface?
+        func finish() {
+            if let current, current.name != "lo0" { interfaces.append(current) }
+        }
+        for line in text.split(separator: "\n") {
+            if let first = line.first, !first.isWhitespace, let colon = line.firstIndex(of: ":") {
+                finish()
+                current = Interface(name: String(line[..<colon]), mac: nil, addresses: [])
+                continue
+            }
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count >= 2, current != nil else { continue }
+            func after(_ key: String) -> Substring? {
+                fields.firstIndex(of: Substring(key)).flatMap { $0 + 1 < fields.count ? fields[$0 + 1] : nil }
+            }
+            switch fields[0] {
+            case "ether":
+                current?.mac = String(fields[1])
+            case "inet":
+                // netmask 0xffffff00 → /24
+                let prefix = after("netmask").flatMap { UInt32($0.dropFirst(2), radix: 16) }.map(\.nonzeroBitCount)
+                current?.addresses.append(prefix.map { "\(fields[1])/\($0)" } ?? String(fields[1]))
+            case "inet6":
+                let address = fields[1].split(separator: "%").first.map(String.init) ?? String(fields[1])
+                current?.addresses.append(after("prefixlen").map { "\(address)/\($0)" } ?? address)
+            default:
+                break
+            }
+        }
+        finish()
+        return interfaces
+    }
+
+    /// The volumes in `df -k -P` that the Finder shows too: the mount table marks the system's own (Preboot, VM, …)
+    /// nobrowse. Shared folders are left out, as on Linux. APFS volumes share their container's space, so a volume's
+    /// own Used leaves out its siblings ("/" holds only the system; files are on the Data volume): used here is what
+    /// the container has in use.
+    static func macOSFilesystems(df: [Substring], mount: [Substring]) -> [Filesystem] {
+        var mounts: [String: (type: String, nobrowse: Bool)] = [:]
+        for line in mount {
+            // "/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)"
+            guard let on = line.range(of: " on "), let open = line.range(of: " (", options: .backwards),
+                  line.hasSuffix(")"), on.upperBound <= open.lowerBound else { continue }
+            let options = line[open.upperBound..<line.index(before: line.endIndex)]
+                .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard let type = options.first else { continue }
+            mounts[String(line[on.upperBound..<open.lowerBound])] = (type, options.contains("nobrowse"))
+        }
+        return df.dropFirst().compactMap { line in
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count >= 6, let blocks = UInt64(fields[1]), let available = UInt64(fields[3]), blocks > 0 else { return nil }
+            let mountPoint = fields[5...].joined(separator: " ")
+            guard let entry = mounts[mountPoint], !entry.nobrowse, !entry.type.lowercased().contains("virtiofs") else { return nil }
+            let size = blocks * 1024
+            return Filesystem(device: String(fields[0]), type: entry.type, mount: mountPoint, size: size,
+                              used: size - min(available * 1024, size))
+        }
     }
 }

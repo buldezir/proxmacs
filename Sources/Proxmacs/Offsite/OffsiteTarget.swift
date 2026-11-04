@@ -92,14 +92,14 @@ enum Secrets {
     private static let lock = NSLock()
 
     static func get(_ key: String) -> String? {
-        lock.withLock { all()[key] }
+        lock.withLock { read()[key] }
     }
 
     /// The whole file is re-encoded on write, so the read-modify-write has to be serialized
     /// or a concurrent save (a target, a VNC credential) can lose the other's key.
     static func set(_ key: String, _ value: String?) throws {
         try lock.withLock {
-            var secrets = all()
+            var secrets = read()
             secrets[key] = value
             let data = try JSONEncoder.proxmacs.encode(secrets)
             FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600])
@@ -108,7 +108,12 @@ enum Secrets {
         }
     }
 
-    private static func all() -> [String: String] {
+    /// Every key, for a caller that needs several: one read of the file.
+    static func all() -> [String: String] {
+        lock.withLock { read() }
+    }
+
+    private static func read() -> [String: String] {
         guard let data = try? Data(contentsOf: file) else { return [:] }
         return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
     }

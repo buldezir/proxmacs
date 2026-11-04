@@ -106,7 +106,7 @@ export function HardwareView({ vm, navigate }: { vm: VM; navigate: Navigate }) {
                 </span>
               </div>
             </div>
-            {f.mode !== vm.network.mode && !vm.cloudInit.network.dhcp && (
+            {f.mode !== vm.network.mode && vm.os !== 'darwin' && !vm.cloudInit.network.dhcp && (
               <p className="note warn">This VM has a static address. Update it on the{' '}
                 <button type="button" className="link" onClick={() => navigate({ type: 'vm', name: vm.name, tab: 'cloudinit' })}>Cloud-Init</button>{' '}
                 tab to match the new network.</p>
@@ -186,8 +186,13 @@ function DisksPanel({ vm }: { vm: VM }) {
       )}
       {vm.disks.length > 0 && (
         <p className="muted small prose" style={{ padding: '0 14px 10px' }}>
-          Format a new disk in the guest (e.g. <span className="mono">sudo mkfs.ext4 /dev/vdb</span>) and mount it by UUID in
-          /etc/fstab. Only the root filesystem is frozen during backups.
+          {vm.os === 'darwin' ? (
+            <>Format a new disk in the guest with Disk Utility. macOS can’t freeze its filesystems, so backups of the running VM
+              are crash-consistent.</>
+          ) : (
+            <>Format a new disk in the guest (e.g. <span className="mono">sudo mkfs.ext4 /dev/vdb</span>) and mount it by UUID in
+              /etc/fstab. Only the root filesystem is frozen during backups.</>
+          )}
         </p>
       )}
     </Panel>
@@ -221,6 +226,9 @@ function SharesPanel({ vm }: { vm: VM }) {
   const remove = async (share: string) => {
     app.updateVM(await api<VM>('DELETE', `/api/vms/${enc(vm.name)}/shares/${enc(share)}`, {}));
   };
+  // macOS mounts Tart's shares itself; Linux guests mount them with a unit from the cloud-init seed.
+  const macOS = vm.os === 'darwin';
+  const mountRoot = macOS ? '/Volumes/My Shared Files' : '/mnt/shared';
 
   return (
     <Panel title="Shared folders" narrow>
@@ -230,7 +238,7 @@ function SharesPanel({ vm }: { vm: VM }) {
           <tbody>
             {vm.shares.map((s) => (
               <tr key={s.name}>
-                <td className="mono wrap">/mnt/shared/{s.name}{s.readOnly && <span className="muted"> (read-only)</span>}</td>
+                <td className="mono wrap">{mountRoot}/{s.name}{s.readOnly && <span className="muted"> (read-only)</span>}</td>
                 <td className="mono wrap">{s.path}</td>
                 <td className="actions-cell">
                   <ActionButton className="small danger" disabled={!stopped} title={stopped ? null : 'Shut the VM down first'}
@@ -257,9 +265,9 @@ function SharesPanel({ vm }: { vm: VM }) {
         </fieldset>
       </form>
       <p className="muted small spaced">
-        {stopped ? 'Shares' : 'Shut the VM down to change shares. They'} are mounted in the guest at /mnt/shared/&lt;name&gt; on every
+        {stopped ? 'Shares' : 'Shut the VM down to change shares. They'} are mounted in the guest at {mountRoot}/&lt;name&gt; on every
         boot (virtiofs). Files the guest creates belong to your macOS user.
-        {!vm.hasSeed && ' This VM has no cloud-init seed: mount them yourself with sudo mount -t virtiofs com.apple.virtio-fs.automount /mnt/shared.'}
+        {!macOS && !vm.hasSeed && ' This VM has no cloud-init seed: mount them yourself with sudo mount -t virtiofs com.apple.virtio-fs.automount /mnt/shared.'}
       </p>
     </Panel>
   );

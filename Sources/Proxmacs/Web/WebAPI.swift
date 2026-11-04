@@ -253,6 +253,7 @@ struct WebAPI: Sendable {
                         "gateway": config.network.gateway as Any? ?? NSNull(), "dns": config.network.dns],
         ]
         return [
+            "os": item.os?.rawValue as Any? ?? NSNull(), "sshUser": item.sshUser as Any? ?? NSNull(),
             "cloudInit": cloudInit, "seedPending": item.meta.seedPending, "image": item.meta.image as Any? ?? NSNull(),
             "hasSeed": FileManager.default.fileExists(atPath: Paths.seedISO(item.name).path),
             "name": item.name, "state": item.state, "ip": item.ip as Any? ?? NSNull(), "network": network,
@@ -340,8 +341,8 @@ struct WebAPI: Sendable {
                 let source = try await Self.requireVM(state, context)
                 let body = try await API.body(request)
                 guard let name = body["name"] as? String else { throw APIError(message: "name is required") }
-                try await state.validateNewVM(name)
                 let network = (body["ipv4"] as? [String: Any]).map(Self.guestNetwork)
+                try await state.validateClone(source, to: name, network: network)
                 let start = body["start"] as? Bool ?? false
                 let task = Self.newTaskID()
                 Task { @MainActor in try? await state.clone(source, to: name, start: start, network: network, taskID: task) }

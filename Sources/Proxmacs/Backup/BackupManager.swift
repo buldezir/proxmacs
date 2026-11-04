@@ -55,11 +55,12 @@ enum BackupManager {
     }
 
     /// Clones `files` of the VM into `directory` (on the VM storage volume, so instantly). While the VM runs,
-    /// the guest's root filesystem is frozen through the agent for the clone; returns whether it was.
+    /// the guest's root filesystem is frozen through the agent for the clone; returns whether it was. macOS has no
+    /// freeze, so a running macOS guest only syncs and its copy is crash-consistent.
     static func snapshot(_ vm: String, files: [String], into directory: URL, running: Bool, tart: Tart) async throws -> Bool {
         let source = Paths.tartVMDir(vm)
         var frozen = false
-        if running, (try? await tart.exec(vm, ["sync"]))?.succeeded == true {
+        if running, (try? await tart.exec(vm, ["sync"]))?.succeeded == true, GuestOS.of(vm) != .darwin {
             frozen = (try? await tart.exec(vm, ["fsfreeze", "--freeze", "/"]))?.succeeded == true
         }
         do {

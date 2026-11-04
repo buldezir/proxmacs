@@ -36,6 +36,7 @@ enum CLI {
       disk-add <name> <GB> [--no-backup] | disk-resize <name> <diskN.img> <GB> | disk-rm <name> <diskN.img>
       share-add <name> <share> <folder> [--ro] | share-rm <name> <share>
                                        host folders, mounted in the guest at /mnt/shared/<share>
+                                       (macOS guests: /Volumes/My Shared Files/<share>)
       backups <name>
       restore <name> [index]      (0 = newest, as listed by `backups`)
 
