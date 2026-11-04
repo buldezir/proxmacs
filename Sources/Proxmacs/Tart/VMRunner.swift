@@ -62,15 +62,20 @@ enum VMRunner {
         // 3. tart run, with the serial port on our pty; again if the VM crashes and starts on login.
         var restarts: [Date] = []
         var restarting: TaskRecord?
+        var startRetries = 0
         var status: Int32 = 0
         while true {
-            if meta.seedPending {
-                // This boot picks up the rebuilt seed.
-                meta.seedPending = false
-                try? meta.save()
+            // A retry is the same boot: its provisioning is already prepared and being confirmed.
+            var provisioning: String?
+            if startRetries == 0 {
+                if meta.seedPending {
+                    // This boot picks up the rebuilt seed.
+                    meta.seedPending = false
+                    try? meta.save()
+                }
+                // macOS guests have no cloud-init, so there is nothing to provision or confirm.
+                provisioning = os == .darwin ? nil : prepareProvisioning(vm, meta: &meta)
             }
-            // macOS guests have no cloud-init, so there is nothing to provision or confirm.
-            let provisioning = os == .darwin ? nil : prepareProvisioning(vm, meta: &meta)
 
             let process = Process()
             process.executableURL = URL(fileURLWithPath: tart.path)
@@ -104,6 +109,15 @@ enum VMRunner {
             status = process.terminationStatus
             print("proxmacs: tart exited with status \(status)")
             guard !stop.requested, let failure = output.failure() else { break }
+
+            if shouldRetryStart(failure: failure, ranFor: Date().timeIntervalSince(started), retries: startRetries) {
+                startRetries += 1
+                print("proxmacs: \(vm) didn't start, maybe because its disk image was busy: trying again in 2 s")
+                for _ in 0..<8 where !stop.requested { Thread.sleep(forTimeInterval: 0.25) }
+                if stop.requested { break }
+                continue
+            }
+            startRetries = 0
 
             meta = VMMeta.load(vm) ?? meta
             restarts = restarts.filter { $0 > Date().addingTimeInterval(-3600) }
@@ -300,6 +314,16 @@ extension VMRunner {
         if signaled { return "tart was killed by signal \(status)" }
         if status != 0 { return lines.last.map(String.init) ?? "tart exited with status \(status)" }
         return nil
+    }
+
+    static let maxStartRetries = 3
+
+    /// Whether to run `tart run` again after it failed to start the VM. `tart list` reads the size of a stopped
+    /// VM's disk image, and for a sparse ASIF image (macOS guests) that locks the file for a moment. When
+    /// Virtualization opens the disk at that moment, it can't lock it and the VM fails to start. Proxmacs's own
+    /// refresh right after a start, its polling, or anyone's `tart list` can do that; a second try finds it free.
+    static func shouldRetryStart(failure: String, ranFor: TimeInterval, retries: Int) -> Bool {
+        failure.contains("The virtual machine failed to start.") && ranFor < 15 && retries < maxStartRetries
     }
 }
 
