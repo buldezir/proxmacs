@@ -75,7 +75,17 @@ struct Tart {
 
     /// Asks the guest to shut down, forcing it off after `timeout` seconds (0 = immediately).
     func stop(_ name: String, timeout: Int = 30) async throws {
-        try await run(["stop", name, "--timeout", String(timeout)], timeout: TimeInterval(timeout + 15))
+        // `tart stop` kills `tart run` when the guest doesn't shut down in time (at once with timeout 0), which the
+        // runner can't tell from a crash by itself: without the marker it would start a VM on login again.
+        let marker = LaunchAgent.stopMarker(name)
+        try? Data().write(to: marker)
+        do {
+            try await run(["stop", name, "--timeout", String(timeout)], timeout: TimeInterval(timeout + 15))
+        } catch {
+            // The VM may still be running, and its next crash is one.
+            try? FileManager.default.removeItem(at: marker)
+            throw error
+        }
     }
 
     func delete(_ name: String) async throws {

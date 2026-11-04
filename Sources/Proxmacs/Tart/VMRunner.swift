@@ -49,7 +49,7 @@ enum VMRunner {
         try hub.listen(on: socketPath(vm))
 
         // Forward launchd's SIGTERM (bootout) / SIGINT to tart so the guest shuts down cleanly.
-        let stop = StopRequest()
+        let stop = StopRequest(marker: LaunchAgent.stopMarker(vm))
         for sig in [SIGTERM, SIGINT] {
             signal(sig, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
@@ -80,6 +80,7 @@ enum VMRunner {
             process.arguments = LaunchAgent.tartRunArguments(meta: meta, serialPath: slavePath)
             process.environment = Tart.environment
             let output = TartOutput(process)
+            stop.clearMarker()
             do {
                 try process.run()
             } catch {
@@ -244,13 +245,20 @@ enum VMRunner {
     }
 }
 
-/// Whether launchd asked the runner to stop (bootout), and the `tart run` to pass that on to.
+/// Whether launchd asked the runner to stop (bootout) or Proxmacs stopped the VM with `tart stop` (its marker), and
+/// the `tart run` to pass a stop from launchd on to.
 private final class StopRequest: @unchecked Sendable {
     private let lock = NSLock()
+    private let marker: URL
     private var process: Process?
     private var stopping = false
 
-    var requested: Bool { lock.withLock { stopping } }
+    init(marker: URL) { self.marker = marker }
+
+    var requested: Bool { lock.withLock { stopping } || FileManager.default.fileExists(atPath: marker.path) }
+
+    /// Before each `tart run`: a marker from an earlier stop isn't about this run.
+    func clearMarker() { try? FileManager.default.removeItem(at: marker) }
 
     func track(_ process: Process?) { lock.withLock { self.process = process } }
 

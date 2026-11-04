@@ -56,7 +56,8 @@ A Proxmox-flavoured menubar VM manager for Apple Silicon Macs, built on [Tart](h
   `Proxmacs cli run-vm <name>`, which supervises `tart run` and owns the serial console
   (socket `/tmp/proxmacs-<uid>/<name>.sock`, scrollback in `vms/<name>/console.log`).
   Optionally, a VM starts on login. Such a VM also starts again if it crashes after running for at least a minute,
-  up to 3 times an hour. The task log records each crash and whether the VM was restarted.
+  up to 3 times an hour. Power off, Reset and a Shutdown that has to force the VM off aren't taken for crashes. The
+  task log records each crash and whether the VM was restarted.
 
 ## Screenshots
 

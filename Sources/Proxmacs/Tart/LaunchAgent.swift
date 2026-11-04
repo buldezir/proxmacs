@@ -38,6 +38,9 @@ enum LaunchAgent {
     /// Written by `start`, so the runner can tell a start from the UI from a start at login.
     static func manualStartMarker(_ vm: String) -> URL { Paths.vmDir(vm).appending(path: "manual-start") }
 
+    /// Written by `Tart.stop`, so the runner can tell a stop from Proxmacs from a crash.
+    static func stopMarker(_ vm: String) -> URL { Paths.vmDir(vm).appending(path: "stop-requested") }
+
     /// This binary (menubar app or CLI build), which provides `cli run-vm`.
     static var selfExecutable: String {
         Bundle.main.executablePath ?? ProcessInfo.processInfo.arguments[0]
