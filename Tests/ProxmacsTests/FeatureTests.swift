@@ -233,6 +233,18 @@ final class GuestOSTests: XCTestCase {
         XCTAssertNil(GuestInfo.ifconfigAddress(""))
     }
 
+    /// A macOS guest has no systemctl, and `tart exec` hangs if the guest goes down under it.
+    func testRebootCommand() throws {
+        XCTAssertEqual(GuestOS.rebootCommand(.linux), ["systemctl", "reboot"])
+        XCTAssertEqual(GuestOS.rebootCommand(nil), ["systemctl", "reboot"])
+        let mac = GuestOS.rebootCommand(.darwin)
+        XCTAssertEqual(Array(mac.prefix(2)), ["/bin/sh", "-c"])
+        let script = try XCTUnwrap(mac.last)
+        XCTAssertTrue(script.hasPrefix("/usr/bin/sudo -n /usr/bin/true && "), "fails, rather than claims a reboot, without passwordless sudo")
+        XCTAssertTrue(script.contains("sleep 2; /usr/bin/sudo -n /sbin/shutdown -r now"))
+        XCTAssertTrue(script.hasSuffix("& }"), "in the background, so the agent call returns first")
+    }
+
     func testSSHUserOfAMacOSGuestIsItsScreenSharingAccount() {
         var meta = VMMeta(name: "mac", network: .nat, autostart: false)
         var item = VMItem(meta: meta, state: "running", ip: "192.168.64.5")

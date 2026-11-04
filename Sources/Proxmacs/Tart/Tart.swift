@@ -35,6 +35,15 @@ enum GuestOS: String, Sendable {
               let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return GuestOS(config: config)
     }
+
+    /// Asks the guest, through its agent, to reboot. A macOS guest restarts in place, but `tart exec` never returns
+    /// once the guest goes down, so a background job restarts it after the call has returned. `sudo -n true` fails
+    /// without passwordless sudo, so a reboot that couldn't happen isn't reported as one.
+    static func rebootCommand(_ os: GuestOS?) -> [String] {
+        guard os == .darwin else { return ["systemctl", "reboot"] }
+        return ["/bin/sh", "-c",
+                "/usr/bin/sudo -n /usr/bin/true && { (sleep 2; /usr/bin/sudo -n /sbin/shutdown -r now) </dev/null >/dev/null 2>&1 & }"]
+    }
 }
 
 /// Thin wrapper around the official (entitlement-signed) `tart` binary.

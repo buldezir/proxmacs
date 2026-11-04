@@ -439,7 +439,7 @@ final class AppState {
         await perform(vm, force ? "Reset" : "Reboot", taskID: taskID) { task in
             let tart = try requireTart()
             guard item(vm)?.isRunning == true else { throw ProxmacsError("\(vm) is not running") }
-            if !force, (try? await tart.exec(vm, ["systemctl", "reboot"], timeout: 10))?.succeeded == true {
+            if !force, (try? await tart.exec(vm, GuestOS.rebootCommand(GuestOS.of(vm)), timeout: 10))?.succeeded == true {
                 return "Rebooting \(vm)"
             }
             task.message(force ? "Turning \(vm) off…" : "Guest agent unreachable: shutting \(vm) down…")
