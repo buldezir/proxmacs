@@ -94,4 +94,20 @@ final class GuestShellTests: XCTestCase {
         XCTAssertEqual(VMRunner.crashReason(output: "a\nVM \"x\" is already running!\n", status: 1, signaled: false),
                        "VM \"x\" is already running!")
     }
+
+    /// What tart prints when Virtualization can't lock a macOS VM's disk image that `tart list` is reading.
+    func testRetriesAStartThatFoundTheDiskBusy() throws {
+        let output = """
+            Error Domain=VZErrorDomain Code=1 "The virtual machine failed to start." UserInfo={NSLocalizedFailure=\
+            Internal Virtualization error., NSLocalizedFailureReason=The virtual machine failed to start.}
+            """
+        let failure = try XCTUnwrap(VMRunner.crashReason(output: output + "\n", status: 1, signaled: false))
+        XCTAssertTrue(VMRunner.shouldRetryStart(failure: failure, ranFor: 0.5, retries: 0))
+        XCTAssertTrue(VMRunner.shouldRetryStart(failure: failure, ranFor: 0.5, retries: VMRunner.maxStartRetries - 1))
+        XCTAssertFalse(VMRunner.shouldRetryStart(failure: failure, ranFor: 0.5, retries: VMRunner.maxStartRetries),
+                       "gives up, and the failure is reported as before")
+        XCTAssertFalse(VMRunner.shouldRetryStart(failure: failure, ranFor: 120, retries: 0), "not a VM that ran a while")
+        XCTAssertFalse(VMRunner.shouldRetryStart(failure: "The virtual machine stopped unexpectedly.", ranFor: 0.5, retries: 0))
+        XCTAssertFalse(VMRunner.shouldRetryStart(failure: "VM \"x\" is already running!", ranFor: 0.5, retries: 0))
+    }
 }
