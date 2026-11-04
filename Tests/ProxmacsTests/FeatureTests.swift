@@ -114,6 +114,49 @@ final class GuestParsingTests: XCTestCase {
         XCTAssertEqual(counters?.memUsed, (2014712 - 1500000) * 1024)
     }
 
+    /// From a macOS 27 guest (some vm_stat lines and netstat address rows left out).
+    func testMacOSGuestCounters() {
+        let text = """
+            @mem
+            8589934592
+            Mach Virtual Memory Statistics: (page size of 16384 bytes)
+            Pages free:                                     3928.
+            Pages active:                                 205818.
+            Pages wired down:                              70053.
+            Pages purgeable:                                4764.
+            "Translation faults":                        3429437.
+            File-backed pages:                            266927.
+            Anonymous pages:                              159085.
+            Pages occupied by compressor:                  23605.
+            @net
+            Name       Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll
+            lo0        16384 <Link#1>                           531     0     107363      531     0     107363     0
+            lo0        16384 127           127.0.0.1            531     -     107363      531     -     107363     -
+            gif0*      1280  <Link#2>                             0     0          0        0     0          0     0
+            en0        1500  <Link#6>    7a:67:c6:09:af:5f    20527     0    8057118     5270     0    2270074     0
+            en0        1500  192.168.178   192.168.178.32     20527     -    8057118     5270     -    2270074     -
+            utun0      1380  <Link#8>                             0     0          0        2     0        200     0
+            utun4      1280  <Link#12>                         1426     0      89232     1299     0    1392143     0
+            utun4      1280  100.86.96.95/ 100.86.96.95        1426     -      89232     1299     -    1392143     -
+            """
+        let counters = VMMetrics.parseMacOSGuest(text)
+        XCTAssertEqual(counters?.memTotal, 8589934592)
+        XCTAssertEqual(counters?.memUsed, (159085 - 4764 + 70053 + 23605) * 16384, "app + wired + compressed, like Activity Monitor")
+        XCTAssertEqual(counters?.netIn, 8057118 + 89232, "every interface's link row but loopback, each once")
+        XCTAssertEqual(counters?.netOut, 2270074 + 200 + 1392143)
+        XCTAssertNil(VMMetrics.parseMacOSGuest("@mem\n8589934592\n@net\n"), "no vm_stat, no figure")
+    }
+
+    /// The counters come from tools that the macOS test machine has too.
+    func testMacOSGuestScriptRunsOnMacOS() async throws {
+        let result = try await Shell.run("/bin/sh", ["-c", VMMetrics.macOSGuestScript], timeout: 30)
+        XCTAssertTrue(result.succeeded, "status \(result.status): \(result.stderr)")
+        let counters = try XCTUnwrap(VMMetrics.parseMacOSGuest(result.stdout))
+        XCTAssertEqual(counters.memTotal, ProcessInfo.processInfo.physicalMemory)
+        XCTAssertGreaterThan(counters.memUsed, 0)
+        XCTAssertLessThanOrEqual(counters.memUsed, counters.memTotal)
+    }
+
     func testGuestInfo() {
         let text = """
             @os
